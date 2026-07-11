@@ -5,12 +5,15 @@
   "type": "module",
   "packageManager": "bun@1.3.14",
   "license": "MIT OR Apache-2.0",
-  "repository": "github:byeongsu-hong/tauri-agent-fleet",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/byeongsu-hong/tauri-agent-fleet.git"
+  },
   "homepage": "https://github.com/byeongsu-hong/tauri-agent-fleet#readme",
   "bugs": "https://github.com/byeongsu-hong/tauri-agent-fleet/issues",
   "publishConfig": { "access": "public" },
   "bin": {
-    "tauri-agent-fleet": "./dist/cli.js"
+    "tauri-agent-fleet": "dist/cli.js"
   },
   "files": ["dist", "README.md", "LICENSE-APACHE", "LICENSE-MIT"],
   "scripts": {
