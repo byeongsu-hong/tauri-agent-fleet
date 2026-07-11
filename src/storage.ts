@@ -91,7 +91,14 @@ export async function listInstances(root: string): Promise<InstanceRecord[]> {
     throw error
   }
   const instances = await Promise.all(ids.map(async (id) => {
-    try { return await readJson(instancePath(root, id)) as InstanceRecord } catch { return undefined }
+    try {
+      const instance = await readJson(instancePath(root, id)) as InstanceRecord
+      if (instance.endpoint && 'descriptor' in instance.endpoint) {
+        delete (instance.endpoint as Record<string, unknown>).descriptor
+        await saveInstance(root, instance)
+      }
+      return instance
+    } catch { return undefined }
   }))
   return instances.filter((item): item is InstanceRecord => Boolean(item))
 }

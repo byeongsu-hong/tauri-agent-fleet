@@ -1,8 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { access } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
-import { attachAgent, clientFor } from './agent.ts'
-import type { EndpointDescriptor } from '@byeongsu-hong/tauri-agent-plugin/daemon'
+import { attachAgent } from './agent.ts'
 import type { Artifact } from './build.ts'
 import { runCommand } from './command.ts'
 import { freePort, portOpen, waitFor } from './network.ts'
@@ -140,7 +139,7 @@ export async function createInstance(
     }))
     await saveInstance(root, instance)
     const attached = await attachAgent(config.agent.appId, directories.runtime, instance.processes[2]!)
-    instance.endpoint = { healthy: true, descriptor: attached.descriptor, capabilities: attached.capabilities }
+    instance.endpoint = { healthy: true, capabilities: attached.capabilities }
     instance.state = 'ready'
     await saveInstance(root, instance)
     return instance
@@ -160,7 +159,7 @@ export async function stopInstance(root: string, instance: InstanceRecord): Prom
   await saveInstance(root, instance)
 }
 
-export async function refreshInstance(root: string, instance: InstanceRecord): Promise<InstanceRecord> {
+export async function refreshInstance(root: string, instance: InstanceRecord, appId: string): Promise<InstanceRecord> {
   if (ACTIVE.has(instance.state)) {
     if (instance.processes.length === 0 && Date.now() - Date.parse(instance.updatedAt) > 60_000) {
       instance.state = 'failed'
@@ -172,9 +171,11 @@ export async function refreshInstance(root: string, instance: InstanceRecord): P
       instance.state = 'failed'
       if (instance.endpoint) instance.endpoint.healthy = false
       await saveInstance(root, instance)
-    } else if (instance.endpoint?.descriptor) {
+    } else if (instance.endpoint) {
+      const app = instance.processes.find((process) => process.name === 'app')
       try {
-        await clientFor(instance.endpoint.descriptor as EndpointDescriptor, 1_000).call('attach')
+        if (!app) throw new Error('instance has no application process')
+        instance.endpoint.capabilities = (await attachAgent(appId, instance.directories.runtime, app, 1_000)).capabilities
         instance.endpoint.healthy = true
       } catch { instance.endpoint.healthy = false }
       await saveInstance(root, instance)
