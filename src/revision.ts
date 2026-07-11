@@ -37,15 +37,19 @@ function parseWorktrees(raw: string): Array<{ path: string; branch?: string; com
 export async function discoverRevision(repository: string, selector: string | undefined, stateRoot: string): Promise<Revision> {
   const repo = await realpath(resolve(repository))
   const common = await realpath(await output(['git', 'rev-parse', '--show-toplevel'], repo))
+  const worktrees = parseWorktrees(await output(['git', 'worktree', 'list', '--porcelain'], common))
+    .map((item) => ({ ...item, path: resolve(item.path) }))
   let worktree = common
   let branch: string | undefined
   const requestedPath = selector ? resolve(selector) : undefined
   if (requestedPath && await exists(requestedPath)) {
     worktree = await realpath(requestedPath)
+    const match = worktrees.find((item) => item.path === worktree)
+    if (!match) throw new Error(`revision path is not a registered worktree of this repository: ${worktree}`)
+    branch = match.branch
   } else if (selector && selector !== 'HEAD') {
     const wanted = await output(['git', 'rev-parse', selector], common)
-    const match = parseWorktrees(await output(['git', 'worktree', 'list', '--porcelain'], common))
-      .find((item) => item.branch === selector || item.commit === wanted)
+    const match = worktrees.find((item) => item.branch === selector || item.commit === wanted)
     if (match) {
       worktree = match.path
       branch = match.branch
