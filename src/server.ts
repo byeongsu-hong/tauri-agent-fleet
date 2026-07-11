@@ -3,6 +3,7 @@ import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { realpath, stat } from 'node:fs/promises'
 import { listInstances, snapshot } from './storage.ts'
 import { refreshInstance } from './instance.ts'
+import { processOwned } from './process.ts'
 
 interface WebSocketData { host: string; port: number; socket?: Socket; closed: boolean }
 
@@ -52,7 +53,10 @@ export function startDashboard(options: { root: string; assets: string; appId: s
         const token = url.searchParams.get('token') ?? ''
         if (!/^[A-Za-z0-9_-]{32}$/.test(token)) return new Response('unknown VNC token', { status: 404 })
         const instance = (await listInstances(options.root)).find((item) => item.vncToken === token)
-        if (!instance) return new Response('unknown VNC token', { status: 404 })
+        const vnc = instance?.processes.find((process) => process.name === 'vnc')
+        if (!instance || !['booting', 'ready', 'running'].includes(instance.state) || !vnc || !await processOwned(vnc)) {
+          return new Response('unknown VNC token', { status: 404 })
+        }
         return server.upgrade(request, { data: { host: '127.0.0.1', port: instance.vncPort, closed: false } })
           ? undefined : new Response('WebSocket upgrade required', { status: 400 })
       }
