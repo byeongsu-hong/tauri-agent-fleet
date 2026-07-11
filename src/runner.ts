@@ -11,6 +11,20 @@ import { writeFile } from 'node:fs/promises'
 
 export type NextAction = (context: RunnerContext) => Promise<ModelDecision>
 
+class SuiteDeadline extends Error {}
+
+async function byDeadline<T>(value: Promise<T>, deadline: number): Promise<T> {
+  const remaining = deadline - Date.now()
+  if (remaining <= 0) throw new SuiteDeadline('suite time limit exceeded')
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      value,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new SuiteDeadline('suite time limit exceeded')), remaining) })
+    ])
+  } finally { if (timer) clearTimeout(timer) }
+}
+
 async function conditionMet(client: DebuggerClient, condition: SuccessCondition): Promise<boolean> {
   if ('state' in condition) {
     const value = await client.call('state', { key: condition.state.key })
@@ -93,6 +107,7 @@ export async function runSuite(
   await Promise.all(['actions.jsonl', 'model-usage.jsonl', 'semantic.jsonl', 'console.jsonl', 'network.jsonl', 'ipc.jsonl']
     .map((file) => writeFile(join(dir, file), '', { mode: 0o600 })))
   const started = Date.now()
+  const deadline = started + suite.limits.seconds * 1000
   instance.state = 'running'
   instance.run = { id: runId, suite: suite.id, step: 0, startedAt: new Date(started).toISOString(), inputTokens: 0, outputTokens: 0 }
   await saveInstance(root, instance)
@@ -105,23 +120,23 @@ export async function runSuite(
   let previousKey = ''
   const assertions: AssertionState = { ipcMatches: new Set() }
   try {
-    const attached = await attachAgent(appId, instance.directories.runtime, app)
+    const attached = await byDeadline(attachAgent(appId, instance.directories.runtime, app, Math.max(1, deadline - Date.now())), deadline)
     client = attached.client
     try { await client.call('record', { action: 'start' }) } catch { /* optional on compatible plugin releases */ }
-    if (await passed(client, suite.success, assertions)) {
+    if (await byDeadline(passed(client, suite.success, assertions), deadline)) {
       instance.state = 'passed'
     } else {
       for (let step = 0; step < suite.limits.steps; step++) {
         if (Date.now() - started >= suite.limits.seconds * 1000) { failure = 'app_failure'; message = 'suite time limit exceeded'; break }
         if (!await processOwned(app)) { failure = 'app_failure'; message = 'application exited'; break }
-        const seen = await observation(client, cursor)
+        const seen = await byDeadline(observation(client, cursor), deadline)
         cursor = seen.cursor ?? cursor ?? 0
         await appendJsonLine(join(dir, 'semantic.jsonl'), seen.value)
         const used = instance.run.inputTokens + instance.run.outputTokens
         if (suite.limits.tokens !== undefined && used >= suite.limits.tokens) { failure = 'runner_failure'; message = 'token limit exceeded'; break }
         let decision: ModelDecision
         try {
-          decision = await nextAction({
+          decision = await byDeadline(nextAction({
             goal: suite.goal,
             success: suite.success,
             observation: seen.value,
@@ -131,9 +146,10 @@ export async function runSuite(
               seconds: Math.max(0, Math.ceil((suite.limits.seconds * 1000 - (Date.now() - started)) / 1000)),
               ...(suite.limits.tokens === undefined ? {} : { tokens: Math.max(0, suite.limits.tokens - used) })
             }
-          })
+          }), deadline)
           validateUsage(decision.usage)
         } catch (error) {
+          if (error instanceof SuiteDeadline) throw error
           failure = 'runner_failure'; message = error instanceof Error ? error.message : String(error); break
         }
         instance.run.inputTokens += decision.usage.inputTokens
@@ -148,19 +164,20 @@ export async function runSuite(
         previousKey = key
         if (repeated > (suite.limits.repetitions ?? 3)) { failure = 'runner_failure'; message = 'repeated action limit exceeded'; break }
         let result: unknown
-        try { result = await executeAction(client, attached.capabilities, decision.action) } catch (error) {
+        try { result = await byDeadline(executeAction(client, attached.capabilities, decision.action), deadline) } catch (error) {
+          if (error instanceof SuiteDeadline) throw error
           failure = 'runner_failure'; message = error instanceof Error ? error.message : String(error); break
         }
         instance.run.step = step + 1
         previous = { action: decision.action, result }
         await appendJsonLine(join(dir, 'actions.jsonl'), { step: step + 1, action: decision.action, result })
         await saveInstance(root, instance)
-        if (await passed(client, suite.success, assertions)) { instance.state = 'passed'; break }
+        if (await byDeadline(passed(client, suite.success, assertions), deadline)) { instance.state = 'passed'; break }
       }
       if (instance.state !== 'passed' && !failure) { failure = 'runner_failure'; message = 'step limit exceeded' }
     }
   } catch (error) {
-    failure = 'infrastructure_failure'
+    failure = error instanceof SuiteDeadline ? 'app_failure' : 'infrastructure_failure'
     message = error instanceof Error ? error.message : String(error)
   } finally {
     if (client) {
