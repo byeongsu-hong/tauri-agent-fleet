@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { createServer as createTcpServer } from 'node:net'
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -21,7 +20,7 @@ import { privateDir, saveInstance } from '../src/storage.ts'
 import { startDashboard } from '../src/server.ts'
 import { runSuite, type NextAction } from '../src/runner.ts'
 import { defaultVariant } from '../src/scheduler.ts'
-import { freePort, waitFor } from '../src/network.ts'
+import { freePort, portOpen, waitFor } from '../src/network.ts'
 import { openAIAction } from '../src/provider.ts'
 import type { FleetConfig, InstanceRecord, ProcessRecord, Suite } from '../src/types.ts'
 
@@ -235,25 +234,33 @@ test('dashboard validates opaque routes and forwards binary VNC traffic', async 
   const root = join(dir, 'state')
   await mkdir(assets)
   await writeFile(join(assets, 'index.html'), 'fleet dashboard')
-  const tcp = createTcpServer((socket) => socket.pipe(socket))
-  await new Promise<void>((resolve) => tcp.listen(0, '127.0.0.1', resolve))
-  const address = tcp.address()
-  if (!address || typeof address === 'string') throw new Error('missing TCP port')
+  const port = await freePort()
+  const vncScript = join(dir, 'vnc')
+  await writeFile(vncScript, `#!/usr/bin/env bun
+const server = Bun.listen({ hostname: '127.0.0.1', port: Number(Bun.argv[2]), socket: { data(socket, data) { socket.write(data) } } })
+process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
+`)
+  await chmod(vncScript, 0o700)
+  const vnc = await spawnOwned('vnc', [vncScript, String(port)], { log: join(dir, 'vnc.log') })
+  cleanups.push(async () => { await terminateOwned(vnc, 50) })
+  await waitFor(() => portOpen(port), 1_000, 'test VNC port')
   const token = 'A'.repeat(32)
-  const instance = fakeInstance(root, [], {
-    vncPort: address.port,
+  const instance = fakeInstance(root, [vnc], {
+    vncPort: port,
     vncToken: token,
-    state: 'stopped',
     endpoint: { healthy: false, descriptor: { token: 'legacy-agent-token' } } as InstanceRecord['endpoint']
   })
+  const stopped = fakeInstance(root, [], { id: 'stopped', vncPort: port, vncToken: 'B'.repeat(32), state: 'stopped' })
   await saveInstance(root, instance)
+  await saveInstance(root, stopped)
   const web = startDashboard({ root, assets, appId: CONFIG.agent.appId, host: '127.0.0.1', port: 0 })
-  cleanups.push(() => { web.stop(true); tcp.close() })
+  cleanups.push(() => web.stop(true))
   expect(await (await fetch(new URL('/', web.url))).text()).toBe('fleet dashboard')
   const state = await (await fetch(new URL('/api/state', web.url))).text()
   expect(state).not.toContain('legacy-agent-token')
   expect(await readFile(join(instance.directories.root, 'instance.json'), 'utf8')).not.toContain('legacy-agent-token')
   expect((await fetch(new URL('/websockify?token=branch-name', web.url))).status).toBe(404)
+  expect((await fetch(new URL(`/websockify?token=${stopped.vncToken}`, web.url))).status).toBe(404)
   const echoed = await new Promise<number[]>((resolve, reject) => {
     const ws = new WebSocket(new URL(`/websockify?token=${token}`, web.url).toString().replace('http:', 'ws:'))
     ws.binaryType = 'arraybuffer'
