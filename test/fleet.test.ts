@@ -83,6 +83,11 @@ test('revision fingerprints include dirty and untracked content and variant', as
   expect(new Set([clean, first, second]).size).toBe(3)
   const revision = await discoverRevision(repo, 'HEAD', join(repo, '.state'))
   expect(artifactKey(revision, 'wry')).not.toBe(artifactKey(revision, 'cef'))
+  const foreign = await temporary()
+  await runCommand(['git', 'init', '-q'], { cwd: foreign })
+  await expect(discoverRevision(repo, foreign, join(repo, '.state'))).rejects.toThrow('not a registered worktree')
+  await mkdir(join(repo, 'nested'))
+  await expect(discoverRevision(repo, join(repo, 'nested'), join(repo, '.state'))).rejects.toThrow('not a registered worktree')
 })
 
 test('build cache runs a variant build once and validates its manifest', async () => {
