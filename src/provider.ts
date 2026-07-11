@@ -15,17 +15,17 @@ const ACTION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    type: { type: 'string', enum: ['click', 'hover', 'focus', 'blur', 'fill', 'type', 'press', 'scroll', 'wait'] },
-    scope: { type: ['string', 'null'] },
-    role: { type: ['string', 'null'] },
-    name: { type: ['string', 'null'] },
-    text: { type: ['string', 'null'] },
-    value: { type: ['string', 'null'] },
+    t: { type: 'string', enum: ['click', 'hover', 'focus', 'blur', 'fill', 'type', 'press', 'scroll', 'wait'] },
+    s: { type: ['string', 'null'] },
+    r: { type: ['string', 'null'] },
+    n: { type: ['string', 'null'] },
+    q: { type: ['string', 'null'] },
+    v: { type: ['string', 'null'] },
     x: { type: ['number', 'null'] },
     y: { type: ['number', 'null'] },
-    milliseconds: { type: ['integer', 'null'] }
+    ms: { type: ['integer', 'null'] }
   },
-  required: ['type', 'scope', 'role', 'name', 'text', 'value', 'x', 'y', 'milliseconds']
+  required: ['t', 's', 'r', 'n', 'q', 'v', 'x', 'y', 'ms']
 } as const
 
 function outputText(response: Record<string, unknown>): string {
@@ -49,6 +49,61 @@ function cleanNulls(value: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== null))
 }
 
+function compactAction(action: RunnerAction): Record<string, unknown> {
+  const locator = action as RunnerAction & { scope?: string; role?: string; name?: string; text?: string; value?: string; x?: number; y?: number; milliseconds?: number }
+  return Object.fromEntries(Object.entries({
+    t: action.type,
+    s: locator.scope,
+    r: locator.role,
+    n: locator.name,
+    q: locator.text,
+    v: locator.value,
+    x: locator.x,
+    y: locator.y,
+    ms: locator.milliseconds
+  }).filter(([, value]) => value !== undefined))
+}
+
+function compactSuccess(condition: SuccessCondition): Record<string, unknown> {
+  if ('state' in condition) return { s: [condition.state.key, condition.state.equals] }
+  if ('ipc' in condition) return { i: [condition.ipc.command, ...(condition.ipc.ok === undefined ? [] : [condition.ipc.ok])] }
+  const expect = condition.expect
+  return { e: Object.fromEntries(Object.entries({
+    s: expect.scope,
+    r: expect.role,
+    n: expect.name,
+    q: expect.text,
+    p: expect.present,
+    v: expect.value,
+    h: expect.hasState
+  }).filter(([, value]) => value !== undefined)) }
+}
+
+function compactObservation(observation: unknown): unknown {
+  if (!observation || typeof observation !== 'object' || Array.isArray(observation)) return observation
+  const value = observation as Record<string, unknown>
+  if (!('snapshot' in value) && !('frames' in value) && !('dropped' in value)) return observation
+  return {
+    ...('snapshot' in value ? { s: value.snapshot } : {}),
+    ...('frames' in value ? { f: value.frames } : {}),
+    ...(value.dropped === true ? { d: true } : {})
+  }
+}
+
+function modelInput(context: RunnerContext): Record<string, unknown> {
+  return {
+    g: context.goal,
+    p: context.success.map(compactSuccess),
+    o: compactObservation(context.observation),
+    ...(context.previousAction ? { x: { a: compactAction(context.previousAction.action), o: context.previousAction.result } } : {}),
+    b: {
+      n: context.remaining.steps,
+      s: context.remaining.seconds,
+      ...(context.remaining.tokens === undefined ? {} : { t: context.remaining.tokens })
+    }
+  }
+}
+
 export async function openAIAction(context: RunnerContext): Promise<ModelDecision> {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) throw new Error('OPENAI_API_KEY is required')
@@ -60,9 +115,9 @@ export async function openAIAction(context: RunnerContext): Promise<ModelDecisio
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
       store: false,
-      max_output_tokens: 200,
-      instructions: 'Choose exactly one safe UI action toward the goal. Never use shell or JavaScript. Use wait only for brief UI settling.',
-      input: JSON.stringify(context),
+      max_output_tokens: 100,
+      instructions: 'Input: g goal; p success (s=[state key,equals], i=[IPC command,ok?], e=expect); o observation (s snapshot,f frames,d dropped); x previous {a action,o result}; b budget {n steps,s seconds,t tokens}. Output: t action, s scope, r role, n name, q text, v value, ms wait. Null unused. Choose one safe UI action; no shell or JavaScript.',
+      input: JSON.stringify(modelInput(context)),
       text: { format: { type: 'json_schema', name: 'next_action', strict: true, schema: ACTION_SCHEMA } }
     })
   })
@@ -76,7 +131,17 @@ export async function openAIAction(context: RunnerContext): Promise<ModelDecisio
   const outputRate = Number(process.env.OPENAI_OUTPUT_COST_PER_MILLION ?? 0)
   const cost = (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000
   return {
-    action: parseAction(cleanNulls(parsed)),
+    action: parseAction(cleanNulls({
+      type: parsed.t,
+      scope: parsed.s,
+      role: parsed.r,
+      name: parsed.n,
+      text: parsed.q,
+      value: parsed.v,
+      x: parsed.x,
+      y: parsed.y,
+      milliseconds: parsed.ms
+    })),
     usage: { inputTokens, outputTokens, ...(inputRate || outputRate ? { cost } : {}) },
     raw
   }

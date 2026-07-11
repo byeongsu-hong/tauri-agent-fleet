@@ -229,7 +229,7 @@ test('provider sends lean structured context and records reported usage and cost
       requestBody = await request.json() as Record<string, unknown>
       return Response.json({
         output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({
-          type: 'click', scope: null, role: 'button', name: 'Save', text: null, value: null, x: null, y: null, milliseconds: null
+          t: 'click', s: null, r: 'button', n: 'Save', q: null, v: null, x: null, y: null, ms: null
         }) }] }],
         usage: { input_tokens: 100, output_tokens: 20 }
       })
@@ -247,12 +247,30 @@ test('provider sends lean structured context and records reported usage and cost
       else process.env[key] = previous[key]
     }
   })
-  const decision = await openAIAction({ goal: 'Save', success: [{ state: { key: 'saved', equals: true } }], observation: { snapshot: 'button Save' }, remaining: { steps: 2, seconds: 5, tokens: 1000 } })
+  const decision = await openAIAction({
+    goal: 'Save',
+    success: [
+      { state: { key: 'saved', equals: true } },
+      { ipc: { command: 'save_document', ok: true } },
+      { expect: { role: 'button', name: 'Saved', present: true } }
+    ],
+    observation: { frames: [{ seq: 2, changes: ['button Save'] }], dropped: true },
+    previousAction: { action: { type: 'wait', milliseconds: 50 }, result: { ok: true } },
+    remaining: { steps: 2, seconds: 5, tokens: 1000 }
+  })
   expect(decision.action).toEqual({ type: 'click', role: 'button', name: 'Save' })
   expect(decision.usage).toEqual({ inputTokens: 100, outputTokens: 20, cost: 0.00014 })
   expect(requestBody?.store).toBe(false)
+  expect(requestBody?.max_output_tokens).toBe(100)
   expect((requestBody?.text as { format: { type: string } }).format.type).toBe('json_schema')
-  expect(JSON.parse(requestBody?.input as string)).toEqual({ goal: 'Save', success: [{ state: { key: 'saved', equals: true } }], observation: { snapshot: 'button Save' }, remaining: { steps: 2, seconds: 5, tokens: 1000 } })
+  expect(JSON.parse(requestBody?.input as string)).toEqual({
+    g: 'Save',
+    p: [{ s: ['saved', true] }, { i: ['save_document', true] }, { e: { r: 'button', n: 'Saved', p: true } }],
+    o: { f: [{ seq: 2, changes: ['button Save'] }], d: true },
+    x: { a: { t: 'wait', ms: 50 }, o: { ok: true } },
+    b: { n: 2, s: 5, t: 1000 }
+  })
+  expect(Object.keys(((requestBody?.text as { format: { schema: { properties: object } } }).format.schema.properties))).toEqual(['t', 's', 'r', 'n', 'q', 'v', 'x', 'y', 'ms'])
 })
 
 function fakeInstance(root: string, processes: ProcessRecord[], changes: Partial<InstanceRecord> = {}): InstanceRecord {

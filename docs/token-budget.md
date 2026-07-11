@@ -108,6 +108,11 @@ Do not append:
 Persist those details as artifacts. A failure-analysis model may retrieve a
 bounded section later.
 
+The Responses request uses compact keys only at the model boundary; Fleet's
+internal types and persisted artifacts remain descriptive. For a representative
+minimal turn, dynamic context shrinks from 158 to 90 JSON bytes and the strict
+action output from 122 to 92 bytes. Output is capped at 100 tokens.
+
 ## Acceptance targets
 
 Relative to the measured baseline:
