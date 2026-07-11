@@ -3,103 +3,221 @@ import { createRoot } from 'react-dom/client'
 import RFB from '@novnc/novnc'
 import './style.css'
 
-interface Instance {
+type State = 'booting' | 'ready' | 'running' | 'passed' | 'failed' | 'stopped'
+type Filter = 'all' | 'live' | 'running' | 'passed' | 'failed' | 'stopped'
+
+interface Run {
   id: string
-  state: string
-  variant: 'wry' | 'cef'
-  display: string
-  vncToken: string
-  revision: { branch?: string; commit: string; dirtyFingerprint: string }
-  endpoint?: { healthy: boolean }
-  run?: {
-    id: string
-    suite: string
+  suite: string
+  objective: string
+  progress: {
     step: number
-    startedAt: string
+    stepLimit: number
+    elapsedMs: number
+    timeLimitMs: number
     inputTokens: number
     outputTokens: number
-    cost?: number
-    failure?: string
-    message?: string
+    tokenLimit?: number
   }
+  cost?: number
+  failure?: { class: string; message: string }
+  artifacts: Record<string, string>
 }
 
-interface Snapshot { generatedAt: string; instances: Instance[] }
+interface Instance {
+  id: string
+  state: State
+  runtime: 'wry' | 'cef'
+  revision: { branch?: string; commit: string; dirty: boolean }
+  display: string
+  agent: { healthy: boolean }
+  vnc: { available: boolean; websocket?: string }
+  failure?: { class: string; message: string }
+  run?: Run
+}
 
-function useFleet(): Snapshot | undefined {
-  const [fleet, setFleet] = useState<Snapshot>()
+interface Fleet {
+  protocol: 'tauri-agent-console/v1'
+  generatedAt: string
+  summary: { total: number; live: number; running: number; passed: number; failed: number; tokens: number; cost: number }
+  instances: Instance[]
+}
+
+const LIVE = new Set<State>(['booting', 'ready', 'running'])
+
+function useFleet(): { fleet: Fleet | undefined; error: string | undefined } {
+  const [fleet, setFleet] = useState<Fleet>()
+  const [error, setError] = useState<string>()
   useEffect(() => {
     let alive = true
+    let timer: ReturnType<typeof setTimeout>
     const update = async () => {
       try {
-        const response = await fetch('/api/state', { cache: 'no-store' })
-        if (alive && response.ok) setFleet(await response.json())
-      } finally { if (alive) setTimeout(update, 1000) }
+        const response = await fetch('/api/v1/fleet', { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+        if (!response.ok) throw new Error(`Fleet returned ${response.status}`)
+        const next = await response.json() as Fleet
+        if (next.protocol !== 'tauri-agent-console/v1') throw new Error('Unsupported Fleet console protocol')
+        if (alive) { setFleet(next); setError(undefined) }
+      } catch (cause) {
+        if (alive) setError(cause instanceof Error ? cause.message : 'Fleet is unreachable')
+      } finally {
+        if (alive) timer = setTimeout(update, 1000)
+      }
     }
     void update()
-    return () => { alive = false }
+    return () => { alive = false; clearTimeout(timer) }
   }, [])
-  return fleet
+  return { fleet, error }
 }
 
-function Vnc({ token }: { token: string }) {
+function duration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${seconds % 60}s`
+}
+
+function compact(value: number): string {
+  return new Intl.NumberFormat(undefined, { notation: value >= 10_000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value)
+}
+
+function Vnc({ path }: { path: string }) {
   const screen = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!screen.current) return
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const rfb = new RFB(screen.current, `${protocol}//${location.host}/websockify?token=${encodeURIComponent(token)}`, { shared: true })
+    const url = new URL(path, location.href)
+    url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const rfb = new RFB(screen.current, url.toString(), { shared: true })
     rfb.viewOnly = true
     rfb.scaleViewport = true
     rfb.resizeSession = false
     return () => rfb.disconnect()
-  }, [token])
-  return <div className="screen" ref={screen} aria-label="Live application screen" />
+  }, [path])
+  return <div className="vnc" ref={screen} role="img" aria-label="Live application screen" />
 }
 
-function Tile({ instance }: { instance: Instance }) {
-  const running = ['booting', 'ready', 'running'].includes(instance.state)
-  const tokens = (instance.run?.inputTokens ?? 0) + (instance.run?.outputTokens ?? 0)
-  const artifact = instance.run ? `/artifacts/${encodeURIComponent(instance.id)}/${encodeURIComponent(instance.run.id)}` : undefined
-  return <article className={`tile ${instance.state}`}>
-    <header>
-      <div><strong>{instance.run?.suite ?? instance.id}</strong><small>{instance.revision.branch ?? instance.revision.commit.slice(0, 12)}</small></div>
-      <span className="state">{instance.state}</span>
+function Meter({ label, value, limit, display }: { label: string; value: number; limit?: number; display: string }) {
+  const percent = limit ? Math.min(100, value / limit * 100) : 0
+  return <div className="meter">
+    <div className="meter-label"><span>{label}</span><strong>{display}</strong></div>
+    <div className="meter-track" aria-label={`${label}: ${display}`} {...(limit ? { role: 'progressbar', 'aria-valuemin': 0, 'aria-valuenow': Math.min(value, limit), 'aria-valuemax': limit } : {})}><i style={{ width: `${percent}%` }} /></div>
+  </div>
+}
+
+function EmptyScreen({ state }: { state: State }) {
+  const label = state === 'passed' ? 'Run complete' : state === 'failed' ? 'Run failed' : state === 'stopped' ? 'Instance stopped' : 'Screen unavailable'
+  return <div className="vnc empty-screen">
+    <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M10 14h44v31H10zM22 54h20M32 45v9" /><path d="m25 26 6 5-6 5m10 0h7" /></svg>
+    <span>{label}</span>
+  </div>
+}
+
+function FailureScreen({ path }: { path: string }) {
+  const [missing, setMissing] = useState(false)
+  return missing ? <EmptyScreen state="failed" />
+    : <a className="vnc failure-shot" href={path}><img src={path} onError={() => setMissing(true)} alt="Failure screenshot" /></a>
+}
+
+function Screen({ instance }: { instance: Instance }) {
+  const failure = instance.run?.failure && instance.run.artifacts.screenshot
+  return <div className="screen-frame">
+    {instance.vnc.available && instance.vnc.websocket
+      ? <Vnc path={instance.vnc.websocket} />
+      : failure
+        ? <FailureScreen path={failure} />
+        : <EmptyScreen state={instance.state} />}
+    <div className="screen-meta">
+      <span className="runtime">{instance.runtime}</span>
+      <span>{instance.revision.branch ?? instance.revision.commit.slice(0, 10)}{instance.revision.dirty ? ' · dirty' : ''}</span>
+    </div>
+  </div>
+}
+
+function ArtifactLinks({ artifacts }: { artifacts: Record<string, string> }) {
+  const visible = ['run', 'actions', 'usage', 'semantic', 'replay', 'console', 'network', 'ipc']
+  return <nav className="artifacts" aria-label="Run artifacts">
+    {visible.map((name) => artifacts[name] && <a key={name} href={artifacts[name]}>{name}</a>)}
+  </nav>
+}
+
+function InstanceCard({ instance }: { instance: Instance }) {
+  const run = instance.run
+  const tokens = (run?.progress.inputTokens ?? 0) + (run?.progress.outputTokens ?? 0)
+  const title = run?.suite ?? instance.id
+  const agent = instance.agent.healthy ? 'Connected' : LIVE.has(instance.state) ? 'Offline' : 'Ended'
+  const failure = run?.failure ?? instance.failure
+  return <article className={`instance-card state-${instance.state}`}>
+    <header className="card-head">
+      <div className="identity"><span aria-hidden="true" className={`health ${instance.agent.healthy ? 'online' : ''}`} /><div><h2>{title}</h2><p>{run ? instance.id : 'Interactive instance'}</p></div></div>
+      <span className="state-pill">{instance.state}</span>
     </header>
-    {running ? <Vnc token={instance.vncToken} /> : instance.run?.failure && artifact
-      ? <a className="screen failure-shot" href={`${artifact}/failure.png`}><img src={`${artifact}/failure.png`} alt="Failure screenshot" /></a>
-      : <div className="screen placeholder">No live screen</div>}
-    <dl>
-      <div><dt>Runtime</dt><dd>{instance.variant.toUpperCase()}</dd></div>
-      <div><dt>Display</dt><dd>{instance.display}</dd></div>
-      <div><dt>Agent</dt><dd>{instance.endpoint?.healthy ? 'healthy' : 'offline'}</dd></div>
-      <div><dt>Step</dt><dd>{instance.run?.step ?? '—'}</dd></div>
-      <div><dt>Tokens</dt><dd>{tokens.toLocaleString()}</dd></div>
-      <div><dt>Cost</dt><dd>{instance.run?.cost === undefined ? '—' : `$${instance.run.cost.toFixed(4)}`}</dd></div>
-    </dl>
-    {instance.run?.message && <p className="message">{instance.run.failure}: {instance.run.message}</p>}
-    {artifact && <nav><a href={`${artifact}/run.json`}>run</a><a href={`${artifact}/actions.jsonl`}>actions</a><a href={`${artifact}/replay.json`}>replay</a></nav>}
+    <Screen instance={instance} />
+    <div className="card-body">
+      {run && <p className="objective">{run.objective}</p>}
+      {run ? <div className="meters">
+        <Meter label="Steps" value={run.progress.step} limit={run.progress.stepLimit} display={`${run.progress.step}${run.progress.stepLimit ? ` / ${run.progress.stepLimit}` : ''}`} />
+        <Meter label="Time" value={run.progress.elapsedMs} limit={run.progress.timeLimitMs} display={`${duration(run.progress.elapsedMs)} / ${duration(run.progress.timeLimitMs)}`} />
+        <Meter label="Tokens" value={tokens} {...(run.progress.tokenLimit === undefined ? {} : { limit: run.progress.tokenLimit })} display={`${compact(tokens)}${run.progress.tokenLimit ? ` / ${compact(run.progress.tokenLimit)}` : ''}`} />
+      </div> : <p className="objective muted">{instance.state === 'failed' ? 'Instance did not become ready.' : 'Ready for direct inspection and control through the application agent.'}</p>}
+      <dl className="facts">
+        <div><dt>Agent</dt><dd><span aria-hidden="true" className={`health ${instance.agent.healthy ? 'online' : ''}`} />{agent}</dd></div>
+        <div><dt>Display</dt><dd>{instance.display}</dd></div>
+        <div><dt>Commit</dt><dd title={instance.revision.commit}>{instance.revision.commit.slice(0, 10)}</dd></div>
+        <div><dt>Cost</dt><dd>{run?.cost === undefined ? '—' : `$${run.cost.toFixed(4)}`}</dd></div>
+      </dl>
+      {failure && <div className="failure"><strong>{failure.class.replace('_', ' ')}</strong><p>{failure.message}</p></div>}
+    </div>
+    {run && <ArtifactLinks artifacts={run.artifacts} />}
   </article>
 }
 
+function Metric({ label, value, tone }: { label: string; value: string | number; tone?: string }) {
+  return <div className={`metric ${tone ?? ''}`}><span>{label}</span><strong>{value}</strong></div>
+}
+
 function App() {
-  const fleet = useFleet()
-  const [grouped, setGrouped] = useState(false)
-  const groups = useMemo(() => {
-    const result = new Map<string, Instance[]>()
-    for (const instance of fleet?.instances ?? []) {
-      const key = `${instance.revision.branch ?? instance.revision.commit.slice(0, 12)} · ${instance.variant}`
-      result.set(key, [...(result.get(key) ?? []), instance])
-    }
-    return result
-  }, [fleet])
-  return <main>
-    <header className="topbar">
-      <div><p className="eyebrow">TAURI AGENT</p><h1>Fleet</h1></div>
-      <div className="toolbar"><span>{fleet?.instances.length ?? 0} instances</span><button onClick={() => setGrouped(!grouped)}>{grouped ? 'Grid view' : 'Group by revision'}</button></div>
+  const { fleet, error } = useFleet()
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<Filter>('all')
+  const [runtime, setRuntime] = useState<'all' | 'wry' | 'cef'>('all')
+  const instances = useMemo(() => (fleet?.instances ?? []).filter((instance) => {
+    const text = `${instance.id} ${instance.run?.suite ?? ''} ${instance.run?.objective ?? ''} ${instance.run?.failure?.class ?? instance.failure?.class ?? ''} ${instance.run?.failure?.message ?? instance.failure?.message ?? ''} ${instance.revision.branch ?? ''} ${instance.revision.commit} ${instance.revision.dirty ? 'dirty' : ''}`.toLowerCase()
+    const stateMatch = filter === 'all' || (filter === 'live' ? LIVE.has(instance.state) : instance.state === filter)
+    return text.includes(query.toLowerCase()) && stateMatch && (runtime === 'all' || instance.runtime === runtime)
+  }), [fleet, query, filter, runtime])
+  const syncAge = fleet ? Math.max(0, Date.now() - Date.parse(fleet.generatedAt)) : 0
+
+  return <main className="shell">
+    <header className="masthead">
+      <a className="brand" href="/" aria-label="Tauri Agent Fleet home"><span className="brand-mark">F</span><span>TAURI AGENT <b>FLEET</b></span></a>
+      <div className={`connection ${error ? 'disconnected' : ''}`} role="status" aria-live={error ? 'polite' : 'off'}><i aria-hidden="true" />{error ?? (fleet ? <>Live<span className="connection-age"> · {duration(syncAge)} ago</span></> : 'Connecting')}</div>
     </header>
-    {!fleet ? <p className="empty">Connecting to Fleet…</p> : fleet.instances.length === 0 ? <p className="empty">No instances. Start one with <code>tauri-agent-fleet up</code>.</p>
-      : grouped ? <div className="groups">{[...groups].map(([name, instances]) => <section key={name}><h2>{name}</h2><div className="grid">{instances.map((item) => <Tile key={item.id} instance={item} />)}</div></section>)}</div>
-      : <div className="grid">{fleet.instances.map((item) => <Tile key={item.id} instance={item} />)}</div>}
+
+    <section className="hero">
+      <div><p className="kicker">OPERATIONS CONSOLE</p><h1>See every app.<br /><span>Miss nothing.</span></h1><p className="lede">Live runtime, deterministic runs, and failure evidence in one read-only workspace.</p></div>
+      <div className="metrics" aria-label="Fleet summary">
+        <Metric label="Live" value={fleet?.summary.live ?? '—'} tone="blue" />
+        <Metric label="Running" value={fleet?.summary.running ?? '—'} tone="violet" />
+        <Metric label="Passed" value={fleet?.summary.passed ?? '—'} tone="green" />
+        <Metric label="Failed" value={fleet?.summary.failed ?? '—'} tone="red" />
+        <Metric label="Tokens" value={fleet ? compact(fleet.summary.tokens) : '—'} />
+        <Metric label="Cost" value={fleet ? `$${fleet.summary.cost.toFixed(4)}` : '—'} />
+      </div>
+    </section>
+
+    <section className="controls" aria-label="Fleet filters">
+      <label className="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m16 16 5 5" /></svg><span className="sr-only">Search instances</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search suite, branch, instance…" /></label>
+      <div className="filter-pills" role="group" aria-label="Filter by state">
+        {(['all', 'live', 'running', 'passed', 'failed', 'stopped'] as Filter[]).map((name) => <button key={name} aria-pressed={filter === name} className={filter === name ? 'selected' : ''} onClick={() => setFilter(name)}>{name}</button>)}
+      </div>
+      <label className="runtime-filter"><span>Runtime</span><select value={runtime} onChange={(event) => setRuntime(event.target.value as typeof runtime)}><option value="all">All</option><option value="wry">Wry</option><option value="cef">CEF</option></select></label>
+    </section>
+
+    <div className="section-title"><h2>Instances</h2><span>{instances.length} / {fleet?.summary.total ?? 0} shown</span></div>
+    {!fleet ? <div className="empty-state"><span className="loader" /><h2>Connecting to Fleet</h2><p>Waiting for the local control plane.</p></div>
+      : fleet.instances.length === 0 ? <div className="empty-state"><span className="empty-glyph">+</span><h2>No instances yet</h2><p>Start one with <code>tauri-agent-fleet up</code>.</p></div>
+        : instances.length === 0 ? <div className="empty-state"><h2>No matching instances</h2><p>Clear a filter or try a broader search.</p></div>
+          : <section className="instance-grid" aria-label="Fleet instances">{instances.map((instance) => <InstanceCard key={instance.id} instance={instance} />)}</section>}
   </main>
 }
 

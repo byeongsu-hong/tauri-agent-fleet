@@ -91,7 +91,7 @@ Required change:
 
 Every runner turn receives only:
 
-1. immutable goal and deterministic success conditions;
+1. immutable objective and deterministic pass conditions;
 2. current scoped observation or latest delta;
 3. previous action result;
 4. remaining budgets.
@@ -107,6 +107,10 @@ Do not append:
 
 Persist those details as artifacts. A failure-analysis model may retrieve a
 bounded section later.
+
+The provider regression fixture currently measures 160 bytes of runner input
+and 1,008 bytes for the complete Responses API request, including its strict
+action schema.
 
 ## Acceptance targets
 

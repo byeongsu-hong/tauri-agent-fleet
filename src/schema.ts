@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve } from 'node:path'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { ArtifactManifest, FleetConfig, RunnerAction, Suite } from './types.ts'
 
 type ObjectValue = Record<string, unknown>
@@ -15,11 +15,21 @@ function object(value: unknown, label: string): ObjectValue {
 
 function string(value: unknown, label: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} must be a non-empty string`)
+  if (value.includes('\0')) throw new Error(`${label} cannot contain a null byte`)
   return value
 }
 
+function workspacePath(value: unknown, label: string): string {
+  const result = string(value, label)
+  const path = relative('/workspace', resolve('/workspace', result))
+  if (isAbsolute(result) || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) {
+    throw new Error(`${label} must stay inside the workspace`)
+  }
+  return result
+}
+
 function positiveInteger(value: unknown, label: string): number {
-  if (!Number.isInteger(value) || Number(value) <= 0) throw new Error(`${label} must be a positive integer`)
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) throw new Error(`${label} must be a positive safe integer`)
   return Number(value)
 }
 
@@ -30,13 +40,17 @@ function id(value: unknown, label: string): string {
 }
 
 function strings(value: unknown, label: string, allowEmpty = false): string[] {
-  if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || value.some((item) => typeof item !== 'string' || !item)) {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || value.some((item) => typeof item !== 'string' || item.includes('\0'))) {
     throw new Error(`${label} must be ${allowEmpty ? 'a' : 'a non-empty'} string array`)
   }
   return value as string[]
 }
 
-const command = (value: unknown, label: string): string[] => strings(value, label)
+function command(value: unknown, label: string): string[] {
+  const result = strings(value, label)
+  if (!result[0]!.trim()) throw new Error(`${label}[0] must be a non-empty executable`)
+  return result
+}
 
 function optionalCommand(value: unknown, label: string): string[] | undefined {
   return value === undefined ? undefined : command(value, label)
@@ -44,34 +58,40 @@ function optionalCommand(value: unknown, label: string): string[] | undefined {
 
 export function parseConfig(value: unknown): FleetConfig {
   const root = object(value, 'config')
-  only(root, ['schemaVersion', 'baseBranch', 'projectDir', 'stateDir', 'agent', 'hooks', 'variants'], 'config')
-  if (root.schemaVersion !== 1) throw new Error('config.schemaVersion must be 1')
-  const agent = object(root.agent, 'config.agent')
-  only(agent, ['appId'], 'config.agent')
-  const variants = object(root.variants, 'config.variants')
-  only(variants, ['wry', 'cef'], 'config.variants')
-  if (variants.wry === undefined && variants.cef === undefined) throw new Error('config.variants must configure wry or cef')
-  const wry = variants.wry === undefined ? undefined : object(variants.wry, 'config.variants.wry')
-  if (wry) only(wry, ['build'], 'config.variants.wry')
-  const cef = variants.cef === undefined ? undefined : object(variants.cef, 'config.variants.cef')
-  if (cef) only(cef, ['build'], 'config.variants.cef')
-  const hooks = root.hooks === undefined ? undefined : object(root.hooks, 'config.hooks')
-  if (hooks) only(hooks, ['prepareBuild', 'prepareInstance'], 'config.hooks')
+  only(root, ['protocol', 'application', 'lifecycle', 'runtimes'], 'config')
+  if (root.protocol !== 'tauri-agent-fleet/v1') throw new Error('config.protocol must be tauri-agent-fleet/v1')
+  const application = object(root.application, 'config.application')
+  only(application, ['id', 'root'], 'config.application')
+  const runtimes = object(root.runtimes, 'config.runtimes')
+  only(runtimes, ['default', 'wry', 'cef'], 'config.runtimes')
+  if (runtimes.default !== 'wry' && runtimes.default !== 'cef') throw new Error('config.runtimes.default must be wry or cef')
+  const wry = runtimes.wry === undefined ? undefined : object(runtimes.wry, 'config.runtimes.wry')
+  if (wry) only(wry, ['build'], 'config.runtimes.wry')
+  const cef = runtimes.cef === undefined ? undefined : object(runtimes.cef, 'config.runtimes.cef')
+  if (cef) only(cef, ['build'], 'config.runtimes.cef')
+  if (runtimes[runtimes.default] === undefined) throw new Error('config.runtimes.default must name a configured runtime')
+  const lifecycle = root.lifecycle === undefined ? undefined : object(root.lifecycle, 'config.lifecycle')
+  if (lifecycle) only(lifecycle, ['prepareBuild', 'prepareInstance', 'cleanupInstance'], 'config.lifecycle')
   const config: FleetConfig = {
-    schemaVersion: 1,
-    agent: { appId: string(agent.appId, 'config.agent.appId') },
-    variants: {
-      ...(wry ? { wry: { build: command(wry.build, 'config.variants.wry.build') } } : {}),
-      ...(cef ? { cef: { build: command(cef.build, 'config.variants.cef.build') } } : {})
+    protocol: 'tauri-agent-fleet/v1',
+    application: {
+      id: string(application.id, 'config.application.id'),
+      root: workspacePath(application.root, 'config.application.root')
+    },
+    runtimes: {
+      default: runtimes.default,
+      ...(wry ? { wry: { build: command(wry.build, 'config.runtimes.wry.build') } } : {}),
+      ...(cef ? { cef: { build: command(cef.build, 'config.runtimes.cef.build') } } : {})
     }
   }
-  if (root.baseBranch !== undefined) config.baseBranch = string(root.baseBranch, 'config.baseBranch')
-  if (root.projectDir !== undefined) config.projectDir = string(root.projectDir, 'config.projectDir')
-  if (root.stateDir !== undefined) config.stateDir = string(root.stateDir, 'config.stateDir')
-  if (hooks) {
-    config.hooks = {
-      prepareBuild: optionalCommand(hooks.prepareBuild, 'config.hooks.prepareBuild'),
-      prepareInstance: optionalCommand(hooks.prepareInstance, 'config.hooks.prepareInstance')
+  if (lifecycle) {
+    const prepareBuild = optionalCommand(lifecycle.prepareBuild, 'config.lifecycle.prepareBuild')
+    const prepareInstance = optionalCommand(lifecycle.prepareInstance, 'config.lifecycle.prepareInstance')
+    const cleanupInstance = optionalCommand(lifecycle.cleanupInstance, 'config.lifecycle.cleanupInstance')
+    config.lifecycle = {
+      ...(prepareBuild ? { prepareBuild } : {}),
+      ...(prepareInstance ? { prepareInstance } : {}),
+      ...(cleanupInstance ? { cleanupInstance } : {})
     }
   }
   return config
@@ -89,46 +109,50 @@ function hasLocator(value: ObjectValue): boolean {
 
 export function parseSuite(value: unknown): Suite {
   const root = object(value, 'suite')
-  only(root, ['id', 'variant', 'goal', 'success', 'limits'], 'suite')
-  const limits = object(root.limits, 'suite.limits')
-  only(limits, ['steps', 'seconds', 'tokens', 'repetitions'], 'suite.limits')
-  if (!Array.isArray(root.success) || root.success.length === 0) throw new Error('suite.success must be a non-empty array')
-  for (const [index, raw] of root.success.entries()) {
-    const condition = object(raw, `suite.success[${index}]`)
+  only(root, ['protocol', 'id', 'runtime', 'objective', 'pass', 'budget'], 'suite')
+  if (root.protocol !== 'tauri-agent-suite/v1') throw new Error('suite.protocol must be tauri-agent-suite/v1')
+  const budget = object(root.budget, 'suite.budget')
+  only(budget, ['steps', 'seconds', 'tokens', 'repetitions'], 'suite.budget')
+  if (!Array.isArray(root.pass) || root.pass.length === 0) throw new Error('suite.pass must be a non-empty array')
+  for (const [index, raw] of root.pass.entries()) {
+    const condition = object(raw, `suite.pass[${index}]`)
     const keys = ['state', 'ipc', 'expect'].filter((key) => condition[key] !== undefined)
-    if (keys.length !== 1) throw new Error(`suite.success[${index}] must contain exactly one condition`)
-    const body = object(condition[keys[0]!], `suite.success[${index}].${keys[0]}`)
+    if (keys.length !== 1) throw new Error(`suite.pass[${index}] must contain exactly one condition`)
+    const body = object(condition[keys[0]!], `suite.pass[${index}].${keys[0]}`)
     if (keys[0] === 'state') {
-      only(condition, ['state'], `suite.success[${index}]`)
-      only(body, ['key', 'equals'], `suite.success[${index}].state`)
-      string(body.key, `suite.success[${index}].state.key`)
-      if (!('equals' in body)) throw new Error(`suite.success[${index}].state.equals is required`)
+      only(condition, ['state'], `suite.pass[${index}]`)
+      only(body, ['key', 'equals'], `suite.pass[${index}].state`)
+      string(body.key, `suite.pass[${index}].state.key`)
+      if (!('equals' in body)) throw new Error(`suite.pass[${index}].state.equals is required`)
     } else if (keys[0] === 'ipc') {
-      only(condition, ['ipc'], `suite.success[${index}]`)
-      only(body, ['command', 'ok'], `suite.success[${index}].ipc`)
-      string(body.command, `suite.success[${index}].ipc.command`)
-      if (body.ok !== undefined && typeof body.ok !== 'boolean') throw new Error(`suite.success[${index}].ipc.ok must be boolean`)
+      only(condition, ['ipc'], `suite.pass[${index}]`)
+      only(body, ['command', 'ok'], `suite.pass[${index}].ipc`)
+      string(body.command, `suite.pass[${index}].ipc.command`)
+      if (body.ok !== undefined && typeof body.ok !== 'boolean') throw new Error(`suite.pass[${index}].ipc.ok must be boolean`)
     } else {
-      only(condition, ['expect'], `suite.success[${index}]`)
-      only(body, ['scope', 'role', 'name', 'text', 'present', 'value', 'hasState'], `suite.success[${index}].expect`)
-      locator(body, `suite.success[${index}].expect`)
-      if (!hasLocator(body)) throw new Error(`suite.success[${index}].expect requires a locator`)
-      if (body.present !== undefined && typeof body.present !== 'boolean') throw new Error(`suite.success[${index}].expect.present must be boolean`)
-      for (const key of ['value', 'hasState']) if (body[key] !== undefined && typeof body[key] !== 'string') throw new Error(`suite.success[${index}].expect.${key} must be a string`)
+      only(condition, ['expect'], `suite.pass[${index}]`)
+      only(body, ['scope', 'role', 'name', 'text', 'present', 'value', 'hasState'], `suite.pass[${index}].expect`)
+      locator(body, `suite.pass[${index}].expect`)
+      if (!hasLocator(body)) throw new Error(`suite.pass[${index}].expect requires a locator`)
+      if (body.present !== undefined && typeof body.present !== 'boolean') throw new Error(`suite.pass[${index}].expect.present must be boolean`)
+      for (const key of ['value', 'hasState']) if (body[key] !== undefined && typeof body[key] !== 'string') throw new Error(`suite.pass[${index}].expect.${key} must be a string`)
     }
   }
-  const variant = root.variant
-  if (variant !== undefined && variant !== 'wry' && variant !== 'cef') throw new Error('suite.variant must be wry or cef')
+  const runtime = root.runtime
+  if (runtime !== undefined && runtime !== 'wry' && runtime !== 'cef') throw new Error('suite.runtime must be wry or cef')
+  const seconds = positiveInteger(budget.seconds, 'suite.budget.seconds')
+  if (seconds > 2_147_483) throw new Error('suite.budget.seconds cannot exceed 2147483')
   return {
+    protocol: 'tauri-agent-suite/v1',
     id: id(root.id, 'suite.id'),
-    ...(variant ? { variant } : {}),
-    goal: string(root.goal, 'suite.goal'),
-    success: root.success as Suite['success'],
-    limits: {
-      steps: positiveInteger(limits.steps, 'suite.limits.steps'),
-      seconds: positiveInteger(limits.seconds, 'suite.limits.seconds'),
-      ...(limits.tokens === undefined ? {} : { tokens: positiveInteger(limits.tokens, 'suite.limits.tokens') }),
-      ...(limits.repetitions === undefined ? {} : { repetitions: positiveInteger(limits.repetitions, 'suite.limits.repetitions') })
+    ...(runtime ? { runtime } : {}),
+    objective: string(root.objective, 'suite.objective'),
+    pass: root.pass as Suite['pass'],
+    budget: {
+      steps: positiveInteger(budget.steps, 'suite.budget.steps'),
+      seconds,
+      ...(budget.tokens === undefined ? {} : { tokens: positiveInteger(budget.tokens, 'suite.budget.tokens') }),
+      ...(budget.repetitions === undefined ? {} : { repetitions: positiveInteger(budget.repetitions, 'suite.budget.repetitions') })
     }
   }
 }
@@ -159,15 +183,15 @@ export function parseAction(value: unknown): RunnerAction {
 
 export function parseArtifactManifest(value: unknown, artifactDir: string): ArtifactManifest {
   const root = object(value, 'artifact manifest')
-  only(root, ['schemaVersion', 'executable', 'args', 'cwd', 'env'], 'artifact manifest')
-  if (root.schemaVersion !== 1) throw new Error('artifact manifest schemaVersion must be 1')
+  only(root, ['protocol', 'executable', 'args', 'cwd', 'env'], 'artifact manifest')
+  if (root.protocol !== 'tauri-agent-artifact/v1') throw new Error('artifact manifest protocol must be tauri-agent-artifact/v1')
   const executable = string(root.executable, 'artifact manifest.executable')
   const full = resolve(artifactDir, executable)
   const rel = relative(artifactDir, full)
   if (isAbsolute(executable) || rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error('artifact executable must be inside the artifact directory')
   }
-  const manifest: ArtifactManifest = { schemaVersion: 1, executable }
+  const manifest: ArtifactManifest = { protocol: 'tauri-agent-artifact/v1', executable }
   if (root.args !== undefined) manifest.args = strings(root.args, 'artifact manifest.args', true)
   if (root.cwd !== undefined) {
     const cwd = string(root.cwd, 'artifact manifest.cwd')
@@ -177,7 +201,10 @@ export function parseArtifactManifest(value: unknown, artifactDir: string): Arti
   }
   if (root.env !== undefined) {
     const env = object(root.env, 'artifact manifest.env')
-    if (Object.values(env).some((entry) => typeof entry !== 'string')) throw new Error('artifact manifest.env values must be strings')
+    for (const [key, entry] of Object.entries(env)) {
+      if (!key || key.includes('=') || key.includes('\0')) throw new Error('artifact manifest.env contains an invalid variable name')
+      if (typeof entry !== 'string' || entry.includes('\0')) throw new Error('artifact manifest.env values must be strings without null bytes')
+    }
     manifest.env = env as Record<string, string>
   }
   return manifest

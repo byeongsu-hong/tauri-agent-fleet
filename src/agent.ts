@@ -29,9 +29,9 @@ export async function attachAgent(
       const descriptor = await readEndpointRegistry(appId, { env: { XDG_RUNTIME_DIR: runtimeDir } })
       const identity = await processIdentity(descriptor.pid)
       if (!identity || identity.pgid !== app.pgid) throw new Error('endpoint belongs to a different process group')
-      const response = await clientFor(descriptor, 2_000).call<Record<string, unknown>>('attach', { app: appId })
+      const response = await clientFor(descriptor, Math.max(1, Math.min(2_000, deadline - Date.now()))).call<Record<string, unknown>>('attach', { app: appId })
       if (!Array.isArray(response.windows) || response.windows.length === 0) throw new Error('guest bridge has no registered windows')
-      return { client: clientFor(descriptor), descriptor, capabilities: response }
+      return { client: clientFor(descriptor, Math.min(timeoutMs, 10_000)), descriptor, capabilities: response }
     } catch (error) { lastError = error }
     await Bun.sleep(100)
   }

@@ -3,8 +3,8 @@
 Parallel, headless QA orchestration for Tauri applications instrumented with
 [`tauri-agent-plugin`](https://github.com/byeongsu-hong/tauri-agent-plugin).
 
-`tauri-agent-fleet` will build an application once per revision/runtime variant,
-launch isolated instances for test suites, drive each instance with a low-cost AI
+`tauri-agent-fleet` builds an application once per revision/runtime,
+launches isolated instances for test suites, drives each instance with a low-cost AI
 runner, and expose every live screen and run state in one dashboard.
 
 ## Status
@@ -54,7 +54,7 @@ AI providers.
 
 - Linux/X11 headless execution with Xvfb and x11vnc
 - Git worktree/revision discovery
-- Wry and CEF runtime variants
+- Wry and CEF runtimes
 - Build-once, run-many isolated application instances
 - Bounded parallel suite scheduling
 - Low-cost model runners with deterministic success checks
@@ -76,32 +76,44 @@ committed.
 
 ## Configuration
 
-Create `tauri-agent-fleet.json` in the repository root. Commands are argument
-arrays and are executed directly, without Fleet shell interpolation.
+Create `.tauri-agent/fleet.json`. Fleet discovers it from the current directory
+or any descendant. Commands are argument arrays and are executed directly,
+without shell interpolation.
+
+The unreleased root-level `tauri-agent-fleet.json` format is intentionally not
+supported.
 
 ```json
 {
-  "schemaVersion": 1,
-  "baseBranch": "main",
-  "projectDir": ".",
-  "agent": { "appId": "com.example.app" },
-  "hooks": {
+  "protocol": "tauri-agent-fleet/v1",
+  "application": { "id": "com.example.app", "root": "." },
+  "lifecycle": {
     "prepareBuild": ["bash", "qa/fleet/prepare-build.sh"],
-    "prepareInstance": ["bash", "qa/fleet/prepare-instance.sh"]
+    "prepareInstance": ["bash", "qa/fleet/prepare-instance.sh"],
+    "cleanupInstance": ["bun", "qa/fleet/cleanup-instance.ts"]
   },
-  "variants": {
+  "runtimes": {
+    "default": "wry",
     "wry": { "build": ["bash", "qa/fleet/build-wry.sh"] },
     "cef": { "build": ["bash", "qa/fleet/build-cef.sh"] }
   }
 }
 ```
 
+Fleet stops its owned application, VNC, and X process groups before running
+`cleanupInstance`. Applications that detach their own process groups must keep
+exact PID identity in isolated instance state and terminate those groups from
+this hook; broad process-name matching is not allowed. The hook also runs after
+suite completion and persisted lifecycle failures, with a 30-second timeout.
+A failed cleanup leaves the instance and any active run marked
+`infrastructure_failure`; Fleet never reports a partially cleaned run as passed.
+
 A build command writes all reusable output below `FLEET_ARTIFACT_DIR` and writes
 this manifest to `FLEET_ARTIFACT_MANIFEST`:
 
 ```json
 {
-  "schemaVersion": 1,
+  "protocol": "tauri-agent-artifact/v1",
   "executable": "bin/example-app",
   "args": [],
   "cwd": ".",
@@ -110,29 +122,29 @@ this manifest to `FLEET_ARTIFACT_MANIFEST`:
 ```
 
 `executable` and `cwd` must remain inside the artifact directory. Fleet keys the
-cache by repository identity, commit, dirty content, and runtime variant. The
-default private state root is also namespaced by configuration path so commands
-for one repository cannot stop another repository's instances. A relative
-`stateDir` is resolved beside the configuration file.
+cache by repository identity, commit, dirty content, and runtime. The default
+private state root is also namespaced by configuration path so commands
+for one repository cannot stop another repository's instances.
 
-Wry remains the default when configured. A CEF-only application may omit the
-`wry` entry; Fleet then defaults interactive `up` commands to CEF, while suites
-should still declare their variant explicitly.
+`runtimes.default` selects the runtime used by interactive and unspecified suite
+runs. Every named runtime must provide its build command.
 
 ## Suites and runner
 
 Suites are JSON and contain only deterministic assertions. The model may choose
 typed UI actions; it cannot execute JavaScript or shell commands.
+Save each suite as `.tauri-agent/suites/<id>.json` and invoke it by ID.
 
 ```json
 {
+  "protocol": "tauri-agent-suite/v1",
   "id": "editor-save",
-  "variant": "wry",
-  "goal": "Rename the current document to notes.md.",
-  "success": [
+  "runtime": "wry",
+  "objective": "Rename the current document to notes.md.",
+  "pass": [
     { "state": { "key": "editor.documentName", "equals": "notes.md" } }
   ],
-  "limits": { "steps": 25, "seconds": 120, "tokens": 12000, "repetitions": 3 }
+  "budget": { "steps": 25, "seconds": 120, "tokens": 12000, "repetitions": 3 }
 }
 ```
 
@@ -145,13 +157,19 @@ usage is persisted per turn and accumulated on the dashboard.
 tauri-agent-fleet up HEAD
 tauri-agent-fleet status
 tauri-agent-fleet dashboard
-tauri-agent-fleet test qa/suites/save.json --jobs 2
+tauri-agent-fleet test editor-save --jobs 2
 tauri-agent-fleet down
 ```
 
 The dashboard binds to `127.0.0.1` by default. A non-loopback `--host` is an
 explicit operator choice. VNC remains loopback-only and is proxied using random
-opaque route tokens.
+opaque route tokens. The v1 dashboard has no authentication; use an SSH or
+private-network tunnel instead of exposing it directly.
+
+The console reads the versioned `GET /api/v1/fleet` projection, including
+lifecycle failure evidence. VNC and artifact routes also live below `/api/v1`;
+internal process, port, directory, endpoint, and cache records are never part of
+the console protocol.
 
 ## Explicit non-goals
 

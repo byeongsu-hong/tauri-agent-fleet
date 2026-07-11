@@ -8,7 +8,7 @@ build, process, scheduling, runner, artifact, and dashboard layers above it.
 
 ```text
 SourceRevision
-  `-- BuildArtifact (revision + runtime variant)
+  `-- BuildArtifact (revision + runtime)
        |-- Instance A -- Run / Suite A
        |-- Instance B -- Run / Suite B
        `-- Instance C -- Run / Suite C
@@ -22,7 +22,7 @@ entities.
 | Entity | Responsibility |
 | --- | --- |
 | `SourceRevision` | Repository, worktree, commit, branch, and dirty state |
-| `BuildArtifact` | One reusable debug artifact keyed by revision and runtime variant |
+| `BuildArtifact` | One reusable debug artifact keyed by revision and runtime |
 | `Instance` | Isolated HOME, runtime directory, display, ports, data, and process group |
 | `Run` | One suite assigned to one instance, including runner state and artifacts |
 
@@ -40,7 +40,7 @@ tauri-agent-fleet up [revision...]
 tauri-agent-fleet down [instance...]
 tauri-agent-fleet status
 tauri-agent-fleet dashboard
-tauri-agent-fleet test <suite...> --variant <wry|cef> --jobs <n>
+tauri-agent-fleet test <suite-id...> --runtime <wry|cef> --jobs <n>
 ```
 
 `up` retains the current interactive worktree dashboard use case. `test` uses
@@ -51,11 +51,11 @@ build-once/run-many artifacts for parallel suites.
 An artifact key includes at least:
 
 ```text
-repository identity + commit SHA + dirty fingerprint + runtime variant
+repository identity + commit SHA + dirty fingerprint + runtime
 ```
 
-Wry is the default variant. CEF is explicit. The application configuration owns
-the actual build commands; Fleet owns caching and reuse.
+The application configuration names an explicit default runtime and owns each
+runtime's build command; Fleet owns caching and reuse.
 
 ### Instance manager
 
@@ -88,8 +88,8 @@ CEF, screenshot support, or stream support.
 
 A low-cost model receives:
 
-- the suite goal;
-- deterministic success conditions;
+- the suite objective;
+- deterministic pass conditions;
 - the current scoped semantic observation or latest delta;
 - the immediately preceding action result;
 - remaining step/time/token budgets.
@@ -102,7 +102,7 @@ pass/fail.
 
 The dashboard displays one tile per active run/instance with:
 
-- revision and runtime variant;
+- revision and runtime;
 - suite and lifecycle state;
 - current step and elapsed time;
 - token/cost usage;
@@ -113,24 +113,34 @@ The dashboard displays one tile per active run/instance with:
 The first version may continue polling JSON state. A new event bus is not needed
 until polling is measurably inadequate.
 
+Dashboard health probing stays in memory; it does not rewrite lifecycle state
+or terminate processes. Persisted repair and lifecycle control remain CLI-owned.
+
+`GET /api/v1/fleet` returns `tauri-agent-console/v1`. It exposes lifecycle and
+failure evidence, runtime, clean/dirty revision state, run progress, usage, health, and routed
+artifact/VNC URLs; persisted directories, processes, ports, endpoint
+capabilities, and cache keys remain internal.
+
 ## Configuration contract
 
-The v1 application configuration is JSON and command arrays are passed without
-shell interpolation.
+The v1 application configuration lives at `.tauri-agent/fleet.json`. Fleet
+discovers it while walking upward, and command arrays are passed without shell
+interpolation.
 
 ```json
 {
-  "schemaVersion": 1,
-  "baseBranch": "dev",
-  "projectDir": "app",
-  "agent": {
-    "appId": "com.example.app"
+  "protocol": "tauri-agent-fleet/v1",
+  "application": {
+    "id": "com.example.app",
+    "root": "app"
   },
-  "hooks": {
+  "lifecycle": {
     "prepareBuild": ["bash", "qa/fleet/prepare-build.sh"],
-    "prepareInstance": ["bash", "qa/fleet/prepare-instance.sh"]
+    "prepareInstance": ["bash", "qa/fleet/prepare-instance.sh"],
+    "cleanupInstance": ["bun", "qa/fleet/cleanup-instance.ts"]
   },
-  "variants": {
+  "runtimes": {
+    "default": "wry",
     "wry": {
       "build": ["bash", "qa/fleet/build-wry.sh"]
     },
@@ -145,7 +155,7 @@ Fleet provides a small, fixed environment contract to hooks:
 
 ```text
 FLEET_REVISION
-FLEET_VARIANT
+FLEET_RUNTIME
 FLEET_INSTANCE_ID
 FLEET_STATE_DIR
 FLEET_HOME
@@ -162,19 +172,33 @@ the former and write a v1 manifest to the latter. Manifest `executable` and
 optional `cwd` paths are relative to, and confined within, the artifact
 directory.
 
+The manifest declares `"protocol": "tauri-agent-artifact/v1"`. Completed run
+metadata declares `tauri-agent-run/v1`; `status --json` declares
+`tauri-agent-status/v1`.
+
 Hooks may prepare product state but must not start Xvfb, VNC, the Fleet server,
 or the dashboard.
 
+Fleet terminates its recorded application, VNC, and X process groups before it
+runs `cleanupInstance`. The application hook owns any additional process group
+the product deliberately detached, and must identify it from private instance
+state rather than process-name matching. Cleanup runs for explicit stops, suite
+teardown, startup failure, and persisted crash repair. Observe-only dashboard
+refreshes never invoke it. Fleet caps cleanup at 30 seconds and 1 MiB of output.
+Failure marks the instance and active suite run as `infrastructure_failure`.
+
 ## Suite contract
 
-The v1 suite format is deliberately small.
+The v1 suite format is deliberately small. Each `<id>.json` lives under
+`.tauri-agent/suites/` and declares the same `id`.
 
 ```json
 {
+  "protocol": "tauri-agent-suite/v1",
   "id": "editor-save",
-  "variant": "wry",
-  "goal": "Create a document, rename it to notes.md, and save it.",
-  "success": [
+  "runtime": "wry",
+  "objective": "Create a document, rename it to notes.md, and save it.",
+  "pass": [
     {
       "state": {
         "key": "editor.documentName",
@@ -188,7 +212,7 @@ The v1 suite format is deliberately small.
       }
     }
   ],
-  "limits": {
+  "budget": {
     "steps": 25,
     "seconds": 120
   }
@@ -201,9 +225,14 @@ and a reusable subflow language are out of v1 scope.
 ## Security model
 
 - Dashboard bind defaults to `127.0.0.1`.
-- Remote access is an explicit operator choice.
+- Remote access is an explicit operator choice; v1 has no dashboard auth and
+  should be tunneled rather than exposed directly.
 - VNC servers bind to loopback and are routed by random opaque tokens.
 - State/runtime directories use user-private permissions.
 - Plugin session tokens remain in the plugin endpoint registry.
+- Fleet does not forward its inherited `OPENAI_API_KEY` to build hooks,
+  instance hooks, or application processes.
+- Application processes receive isolated HOME/XDG paths but not the global
+  `FLEET_STATE_DIR` unless their artifact manifest sets it explicitly.
 - Low-cost runners cannot invoke arbitrary shell or plugin `eval`.
 - Fleet validates suite files and model actions at trust boundaries.

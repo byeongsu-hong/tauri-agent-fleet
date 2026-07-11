@@ -1,15 +1,40 @@
 import { randomBytes } from 'node:crypto'
 import { access } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { attachAgent } from './agent.ts'
 import type { Artifact } from './build.ts'
 import { runCommand } from './command.ts'
 import { freePort, portOpen, waitFor } from './network.ts'
 import { processOwned, spawnOwned, terminateAll } from './process.ts'
+import { resolveInsideWorktree } from './revision.ts'
 import { listInstances, privateDir, saveInstance, withLock } from './storage.ts'
 import type { FleetConfig, InstanceRecord, Revision, RuntimeVariant } from './types.ts'
 
-const ACTIVE = new Set(['queued', 'building', 'booting', 'ready', 'running'])
+const ACTIVE = new Set(['booting', 'ready', 'running'])
+
+async function failInstance(
+  config: FleetConfig,
+  root: string,
+  instance: InstanceRecord,
+  failure: NonNullable<InstanceRecord['failure']>,
+  persist: boolean
+): Promise<void> {
+  let teardownFailure: unknown
+  const update = async () => {
+    instance.state = 'failed'
+    instance.failure = failure
+    instance.endpoint = { ...instance.endpoint, healthy: false }
+    if (persist) await saveInstance(root, instance)
+  }
+  if (!persist) return await update()
+  try { await teardownInstance(config, root, instance) } catch (error) {
+    teardownFailure = error
+    failure = { ...failure, message: `${failure.message}; teardown failed: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  await update()
+  if (teardownFailure) throw teardownFailure
+}
 
 function safeId(value: string): string {
   const slug = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
@@ -74,33 +99,13 @@ export async function createInstance(
   })
   const { directories } = instance
   const base = directories.root
-  const project = resolve(revision.worktree, config.projectDir ?? '.')
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    HOME: directories.home,
-    XDG_RUNTIME_DIR: directories.runtime,
-    XDG_DATA_HOME: directories.data,
-    XDG_CONFIG_HOME: join(directories.home, '.config'),
-    XDG_CACHE_HOME: join(directories.home, '.cache'),
-    DISPLAY: instance.display,
-    FLEET_REVISION: revision.commit,
-    FLEET_VARIANT: variant,
-    FLEET_INSTANCE_ID: instance.id,
-    FLEET_STATE_DIR: root,
-    FLEET_HOME: directories.home,
-    FLEET_RUNTIME_DIR: directories.runtime,
-    FLEET_DISPLAY: instance.display,
-    FLEET_APP_PORT: String(instance.appPort),
-    FLEET_APP_DATA: directories.data,
-    FLEET_VNC_PORT: String(instance.vncPort),
-    FLEET_ARTIFACT_DIR: artifact.dir,
-    FLEET_ARTIFACT_MANIFEST: join(artifact.dir, 'manifest.json')
-  }
+  const env = instanceEnvironment(root, instance, artifact.dir)
   try {
-    if (config.hooks?.prepareInstance) await runCommand(config.hooks.prepareInstance, { cwd: project, env })
+    const project = await resolveInsideWorktree(revision.worktree, config.application.root)
+    if (config.lifecycle?.prepareInstance) await runCommand(config.lifecycle.prepareInstance, { cwd: project, env })
     const displayNumber = instance.display.slice(1)
-    const xvfb = (process.env.FLEET_XVFB_COMMAND ?? 'Xvfb').split(' ')
-    instance.processes.push(await spawnOwned('xvfb', [...xvfb, instance.display, '-screen', '0', '1440x900x24', '-nolisten', 'tcp', '-noreset', '-ac'], {
+    const xvfb = process.env.FLEET_XVFB_COMMAND ?? 'Xvfb'
+    instance.processes.push(await spawnOwned('xvfb', [xvfb, instance.display, '-screen', '0', '1440x900x24', '-nolisten', 'tcp', '-noreset', '-ac'], {
       env, log: join(base, 'xvfb.log')
     }))
     await saveInstance(root, instance)
@@ -108,28 +113,30 @@ export async function createInstance(
       if (!await processOwned(instance.processes[0]!)) return false
       try { await access(`/tmp/.X11-unix/X${displayNumber}`); return true } catch { return false }
     }, 30_000, `X display ${instance.display}`)
-    const vnc = (process.env.FLEET_VNC_COMMAND ?? 'x11vnc').split(' ')
-    instance.processes.push(await spawnOwned('vnc', [...vnc, '-display', instance.display, '-rfbport', String(instance.vncPort), '-localhost', '-forever', '-shared', '-nopw'], {
+    const vnc = process.env.FLEET_VNC_COMMAND ?? 'x11vnc'
+    instance.processes.push(await spawnOwned('vnc', [vnc, '-display', instance.display, '-rfbport', String(instance.vncPort), '-localhost', '-forever', '-shared', '-nopw'], {
       env, log: join(base, 'vnc.log')
     }))
     await saveInstance(root, instance)
     await waitFor(async () => await processOwned(instance.processes[1]!) && await portOpen(instance.vncPort), 30_000, `VNC port ${instance.vncPort}`)
     const executable = resolve(artifact.dir, artifact.manifest.executable)
+    const appEnv = { ...env }
+    delete appEnv.FLEET_STATE_DIR
     instance.processes.push(await spawnOwned('app', [executable, ...(artifact.manifest.args ?? [])], {
       cwd: resolve(artifact.dir, artifact.manifest.cwd ?? '.'),
       env: {
-        ...env,
+        ...appEnv,
         ...artifact.manifest.env,
         HOME: env.HOME,
         XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR,
         XDG_DATA_HOME: env.XDG_DATA_HOME,
+        XDG_STATE_HOME: env.XDG_STATE_HOME,
         XDG_CONFIG_HOME: env.XDG_CONFIG_HOME,
         XDG_CACHE_HOME: env.XDG_CACHE_HOME,
         DISPLAY: env.DISPLAY,
         FLEET_REVISION: env.FLEET_REVISION,
-        FLEET_VARIANT: env.FLEET_VARIANT,
+        FLEET_RUNTIME: env.FLEET_RUNTIME,
         FLEET_INSTANCE_ID: env.FLEET_INSTANCE_ID,
-        FLEET_STATE_DIR: env.FLEET_STATE_DIR,
         FLEET_HOME: env.FLEET_HOME,
         FLEET_RUNTIME_DIR: env.FLEET_RUNTIME_DIR,
         FLEET_DISPLAY: env.FLEET_DISPLAY,
@@ -142,47 +149,116 @@ export async function createInstance(
       log: join(base, 'app.log')
     }))
     await saveInstance(root, instance)
-    const attached = await attachAgent(config.agent.appId, directories.runtime, instance.processes[2]!)
+    const attached = await attachAgent(config.application.id, directories.runtime, instance.processes[2]!)
     instance.endpoint = { healthy: true, capabilities: attached.capabilities }
     instance.state = 'ready'
     await saveInstance(root, instance)
     return instance
   } catch (error) {
-    await terminateAll(instance.processes)
-    instance.state = 'failed'
-    instance.endpoint = { healthy: false }
-    await saveInstance(root, instance)
+    await failInstance(config, root, instance, {
+      class: 'infrastructure_failure', message: error instanceof Error ? error.message : String(error)
+    }, true)
     throw error
   }
 }
 
-export async function stopInstance(root: string, instance: InstanceRecord): Promise<void> {
-  await terminateAll(instance.processes)
+function instanceEnvironment(root: string, instance: InstanceRecord, artifactDir = join(root, 'artifacts', instance.artifactKey)): NodeJS.ProcessEnv {
+  const { directories } = instance
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: directories.home,
+    XDG_RUNTIME_DIR: directories.runtime,
+    XDG_DATA_HOME: directories.data,
+    XDG_STATE_HOME: join(directories.home, '.local', 'state'),
+    XDG_CONFIG_HOME: join(directories.home, '.config'),
+    XDG_CACHE_HOME: join(directories.home, '.cache'),
+    DISPLAY: instance.display,
+    FLEET_REVISION: instance.revision.commit,
+    FLEET_RUNTIME: instance.variant,
+    FLEET_INSTANCE_ID: instance.id,
+    FLEET_STATE_DIR: root,
+    FLEET_HOME: directories.home,
+    FLEET_RUNTIME_DIR: directories.runtime,
+    FLEET_DISPLAY: instance.display,
+    FLEET_APP_PORT: String(instance.appPort),
+    FLEET_APP_DATA: directories.data,
+    FLEET_VNC_PORT: String(instance.vncPort),
+    FLEET_ARTIFACT_DIR: artifactDir,
+    FLEET_ARTIFACT_MANIFEST: join(artifactDir, 'manifest.json')
+  }
+  delete env.OPENAI_API_KEY
+  return env
+}
+
+export async function teardownInstance(config: FleetConfig, root: string, instance: InstanceRecord): Promise<void> {
+  let failure: unknown
+  try { await terminateAll(instance.processes) } catch (error) { failure = error }
+  if (config.lifecycle?.cleanupInstance) {
+    try {
+      const project = await resolveInsideWorktree(instance.revision.worktree, config.application.root)
+      await runCommand(config.lifecycle.cleanupInstance, {
+        cwd: project, env: instanceEnvironment(root, instance), timeoutMs: 30_000, maxOutputBytes: 1024 * 1024
+      })
+    } catch (error) { failure ??= error }
+  }
+  if (failure) {
+    instance.state = 'failed'
+    instance.failure = {
+      class: 'infrastructure_failure', message: `instance teardown failed: ${failure instanceof Error ? failure.message : String(failure)}`
+    }
+    if (instance.endpoint) instance.endpoint.healthy = false
+    await saveInstance(root, instance)
+    throw failure
+  }
+}
+
+export async function stopInstance(config: FleetConfig, root: string, instance: InstanceRecord): Promise<void> {
+  await teardownInstance(config, root, instance)
   instance.state = 'stopped'
   if (instance.endpoint) instance.endpoint.healthy = false
   await saveInstance(root, instance)
 }
 
-export async function refreshInstance(root: string, instance: InstanceRecord, appId: string): Promise<InstanceRecord> {
+export async function refreshInstance(config: FleetConfig, root: string, instance: InstanceRecord, persist = true): Promise<InstanceRecord> {
   if (ACTIVE.has(instance.state)) {
-    if (instance.processes.length === 0 && Date.now() - Date.parse(instance.updatedAt) > 60_000) {
-      instance.state = 'failed'
-      await saveInstance(root, instance)
+    const staleBoot = instance.state === 'booting' && Date.now() - Date.parse(instance.updatedAt) > 60_000
+    const complete = ['xvfb', 'vnc', 'app'].every((name) => instance.processes.some((process) => process.name === name))
+    if (!complete && (staleBoot || instance.state !== 'booting')) {
+      await failInstance(config, root, instance, { class: 'infrastructure_failure', message: 'instance process set is incomplete' }, persist)
       return instance
     }
     const alive = await Promise.all(instance.processes.map(processOwned))
     if (alive.length > 0 && alive.some((value) => !value)) {
-      instance.state = 'failed'
-      if (instance.endpoint) instance.endpoint.healthy = false
-      await saveInstance(root, instance)
-    } else if (instance.endpoint) {
+      const exited = instance.processes[alive.findIndex((value) => !value)]
+      await failInstance(config, root, instance, {
+        class: exited?.name === 'app' ? 'app_failure' : 'infrastructure_failure',
+        message: `${exited?.name ?? 'instance'} process exited`
+      }, persist)
+    } else if (complete) {
       const app = instance.processes.find((process) => process.name === 'app')
+      let capabilities: unknown
       try {
-        if (!app) throw new Error('instance has no application process')
-        instance.endpoint.capabilities = (await attachAgent(appId, instance.directories.runtime, app, 1_000)).capabilities
-        instance.endpoint.healthy = true
-      } catch { instance.endpoint.healthy = false }
-      await saveInstance(root, instance)
+        capabilities = (await attachAgent(config.application.id, instance.directories.runtime, app!, 1_000)).capabilities
+      } catch (error) {
+        if (instance.state === 'booting') {
+          if (staleBoot) {
+            await failInstance(config, root, instance, {
+              class: 'infrastructure_failure', message: error instanceof Error ? error.message : String(error)
+            }, persist)
+          }
+          return instance
+        }
+        if (instance.endpoint?.healthy === false) return instance
+        instance.endpoint = { ...instance.endpoint, healthy: false }
+        if (persist) await saveInstance(root, instance)
+        return instance
+      }
+      const endpoint = { healthy: true, capabilities }
+      const changed = instance.state === 'booting' || instance.failure !== undefined || !isDeepStrictEqual(instance.endpoint, endpoint)
+      instance.endpoint = endpoint
+      delete instance.failure
+      if (instance.state === 'booting') instance.state = 'ready'
+      if (changed && persist) await saveInstance(root, instance)
     }
   }
   return instance

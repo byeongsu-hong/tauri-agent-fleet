@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { access } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { buildArtifact } from './build.ts'
 import { createInstance, refreshInstance, stopInstance } from './instance.ts'
 import { discoverRevision } from './revision.ts'
@@ -13,13 +13,14 @@ const HELP = `tauri-agent-fleet <command> [options]
 
 Commands:
   up [revision...]                 build and start interactive instances
+     [--runtime wry|cef] [--id PREFIX]
   down [instance...]               stop exact instances (all active if omitted)
   status [--json]                  show instance and run health
   dashboard [--host HOST] [--port PORT]
-  test <suite.json...> [--revision REF] [--variant wry|cef] [--jobs N]
+  test <suite...> [--revision REF] [--runtime wry|cef] [--jobs N]
 
 Options:
-  --config PATH                    config file (default tauri-agent-fleet.json)
+  --config PATH                    config file (default .tauri-agent/fleet.json)
   --help                           show this help
   --version                        show the version`
 
@@ -39,9 +40,9 @@ function flag(args: string[], name: string): boolean {
   return true
 }
 
-function variant(value: string | undefined): RuntimeVariant | undefined {
+function runtime(value: string | undefined): RuntimeVariant | undefined {
   if (value === undefined) return undefined
-  if (value !== 'wry' && value !== 'cef') throw new Error('--variant must be wry or cef')
+  if (value !== 'wry' && value !== 'cef') throw new Error('--runtime must be wry or cef')
   return value
 }
 
@@ -58,10 +59,10 @@ async function main(): Promise<number> {
   const command = args.shift()!
   if (!['up', 'down', 'status', 'dashboard', 'test'].includes(command)) throw new Error(`unknown command: ${command}\n\n${HELP}`)
   const loaded = await loadConfig(configOption)
-  const root = stateRoot(loaded.config, loaded.path)
-  const repository = dirname(loaded.path)
+  const root = stateRoot(loaded.path)
+  const repository = loaded.workspace
   if (command === 'up') {
-    const selectedVariant = variant(take(args, '--variant')) ?? defaultVariant(loaded.config)
+    const selectedVariant = runtime(take(args, '--runtime')) ?? defaultVariant(loaded.config)
     const id = take(args, '--id')
     if (id && args.length > 1) throw new Error('--id can only be used with one revision')
     const selectors = args.length ? args : ['HEAD']
@@ -77,16 +78,20 @@ async function main(): Promise<number> {
     const instances = await listInstances(root)
     const selected = args.length ? instances.filter((item) => args.includes(item.id)) : instances.filter((item) => ['booting', 'ready', 'running'].includes(item.state))
     if (args.length && selected.length !== new Set(args).size) throw new Error('one or more instance IDs were not found')
-    for (const instance of selected) { await stopInstance(root, instance); console.log(`${instance.id}\tstopped`) }
+    for (const instance of selected) { await stopInstance(loaded.config, root, instance); console.log(`${instance.id}\tstopped`) }
     return 0
   }
   if (command === 'status') {
     const json = flag(args, '--json')
     if (args.length) throw new Error(`unknown option: ${args[0]}`)
-    const instances = await Promise.all((await listInstances(root)).map((item) => refreshInstance(root, item, loaded.config.agent.appId)))
-    if (json) console.log(JSON.stringify({ generatedAt: new Date().toISOString(), instances }, null, 2))
+    const instances = await Promise.all((await listInstances(root)).map((item) => refreshInstance(loaded.config, root, item)))
+    if (json) console.log(JSON.stringify({
+      protocol: 'tauri-agent-status/v1',
+      generatedAt: new Date().toISOString(),
+      instances: instances.map(({ schemaVersion: _, variant: runtime, endpoint: agent, ...instance }) => ({ ...instance, runtime, ...(agent ? { agent } : {}) }))
+    }, null, 2))
     else {
-      console.log('INSTANCE\tSTATE\tREVISION\tVARIANT\tDISPLAY\tRUN\tTOKENS')
+      console.log('INSTANCE\tSTATE\tREVISION\tRUNTIME\tDISPLAY\tRUN\tTOKENS')
       for (const item of instances) console.log([
         item.id, item.state, item.revision.branch ?? item.revision.commit.slice(0, 12), item.variant, item.display,
         item.run?.suite ?? '-', item.run ? item.run.inputTokens + item.run.outputTokens : 0
@@ -99,7 +104,7 @@ async function main(): Promise<number> {
     const port = Number(take(args, '--port') ?? 4173)
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('--port must be a valid port')
     if (args.length) throw new Error(`unknown option: ${args[0]}`)
-    const server = startDashboard({ root, assets: await assetsPath(), appId: loaded.config.agent.appId, host, port })
+    const server = startDashboard({ root, assets: await assetsPath(), config: loaded.config, host, port })
     console.log(`dashboard listening on ${server.url}`)
     await new Promise<void>((resolve) => {
       const stop = () => { server.stop(true); resolve() }
@@ -110,12 +115,12 @@ async function main(): Promise<number> {
   }
   if (command === 'test') {
     const revisionName = take(args, '--revision') ?? 'HEAD'
-    const selectedVariant = variant(take(args, '--variant'))
+    const selectedVariant = runtime(take(args, '--runtime'))
     const jobs = Number(take(args, '--jobs') ?? 1)
-    if (!args.length) throw new Error('test requires at least one suite file')
-    const suites = await Promise.all(args.map(loadSuite))
+    if (!args.length) throw new Error('test requires at least one suite ID')
+    const suites = await Promise.all(args.map((id) => loadSuite(loaded.workspace, id)))
     const revision = await discoverRevision(repository, revisionName, root)
-    const results = await runSuites(loaded.config, root, revision, suites, { jobs, ...(selectedVariant ? { variant: selectedVariant } : {}) })
+    const results = await runSuites(loaded.config, root, revision, suites, { jobs, ...(selectedVariant ? { runtime: selectedVariant } : {}) })
     for (const item of results) console.log(`${item.run?.suite}\t${item.state}\t${item.run?.failure ?? '-'}`)
     return results.every((item) => item.state === 'passed') ? 0 : 1
   }
