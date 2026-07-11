@@ -83,7 +83,7 @@ async function main(): Promise<number> {
   if (command === 'status') {
     const json = flag(args, '--json')
     if (args.length) throw new Error(`unknown option: ${args[0]}`)
-    const instances = await Promise.all((await listInstances(root)).map((item) => refreshInstance(root, item)))
+    const instances = await Promise.all((await listInstances(root)).map((item) => refreshInstance(root, item, loaded.config.agent.appId)))
     if (json) console.log(JSON.stringify({ generatedAt: new Date().toISOString(), instances }, null, 2))
     else {
       console.log('INSTANCE\tSTATE\tREVISION\tVARIANT\tDISPLAY\tRUN\tTOKENS')
@@ -99,7 +99,7 @@ async function main(): Promise<number> {
     const port = Number(take(args, '--port') ?? 4173)
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('--port must be a valid port')
     if (args.length) throw new Error(`unknown option: ${args[0]}`)
-    const server = startDashboard({ root, assets: await assetsPath(), host, port })
+    const server = startDashboard({ root, assets: await assetsPath(), appId: loaded.config.agent.appId, host, port })
     console.log(`dashboard listening on ${server.url}`)
     await new Promise<void>((resolve) => {
       const stop = () => { server.stop(true); resolve() }

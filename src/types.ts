@@ -91,7 +91,7 @@ export interface InstanceRecord {
   vncToken: string
   directories: { root: string; home: string; runtime: string; data: string; artifacts: string }
   processes: ProcessRecord[]
-  endpoint?: { healthy: boolean; descriptor?: unknown; capabilities?: unknown }
+  endpoint?: { healthy: boolean; capabilities?: unknown }
   run?: {
     id: string
     suite: string

@@ -35,7 +35,7 @@ async function fileResponse(request: Request, root: string, pathname: string): P
   })
 }
 
-export function startDashboard(options: { root: string; assets: string; host?: string; port?: number }) {
+export function startDashboard(options: { root: string; assets: string; appId: string; host?: string; port?: number }) {
   const assets = resolve(options.assets)
   return Bun.serve<WebSocketData>({
     hostname: options.host ?? '127.0.0.1',
@@ -44,7 +44,7 @@ export function startDashboard(options: { root: string; assets: string; host?: s
       const url = new URL(request.url)
       if (url.pathname === '/api/state') {
         if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('method not allowed', { status: 405 })
-        await Promise.all((await listInstances(options.root)).map((item) => refreshInstance(options.root, item)))
+        await Promise.all((await listInstances(options.root)).map((item) => refreshInstance(options.root, item, options.appId)))
         return Response.json(await snapshot(options.root), { headers: { 'cache-control': 'no-store' } })
       }
       if (url.pathname === '/websockify') {

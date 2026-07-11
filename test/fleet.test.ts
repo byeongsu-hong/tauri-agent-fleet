@@ -8,6 +8,7 @@ import {
   DebuggerSession,
   createLineJsonRpcServer,
   createEndpointDescriptor,
+  readEndpointRegistry,
   writeEndpointRegistry
 } from '@byeongsu-hong/tauri-agent-plugin/daemon'
 import { buildArtifact } from '../src/build.ts'
@@ -148,7 +149,7 @@ let attaches = 0
 const server = Bun.listen({ unix: path, socket: { data(socket, data) {
   for (const line of data.toString().trim().split('\\n')) { const request = JSON.parse(line); attaches += 1; socket.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { attached: true, windows: attaches > 1 ? [{ label: 'main' }] : [], capabilities: { runtime: process.env.FLEET_VARIANT, home: process.env.HOME, display: process.env.DISPLAY, custom: process.env.CUSTOM } } }) + '\\n') }
 } } })
-writeFileSync(join(dir, 'endpoint.json'), JSON.stringify({ appId: 'com.example.app', pid: process.pid, transport: 'unix', path }), { mode: 0o600 })
+writeFileSync(join(dir, 'endpoint.json'), JSON.stringify({ appId: 'com.example.app', pid: process.pid, transport: 'unix', path, token: 'private-agent-token' }), { mode: 0o600 })
 process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
 `)
   await Promise.all([xvfb, vnc, app].map((path) => chmod(path, 0o700)))
@@ -181,7 +182,13 @@ process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
   expect(one.directories.runtime).not.toBe(two.directories.runtime)
   expect(one.directories.data).not.toBe(two.directories.data)
   expect(one.vncToken).not.toBe(two.vncToken)
-  expect((one.endpoint?.descriptor as { path: string }).path).not.toBe((two.endpoint?.descriptor as { path: string }).path)
+  const [oneDescriptor, twoDescriptor] = await Promise.all([
+    readEndpointRegistry(CONFIG.agent.appId, { env: { XDG_RUNTIME_DIR: one.directories.runtime } }),
+    readEndpointRegistry(CONFIG.agent.appId, { env: { XDG_RUNTIME_DIR: two.directories.runtime } })
+  ])
+  if (oneDescriptor.transport !== 'unix' || twoDescriptor.transport !== 'unix') throw new Error('expected Unix endpoints')
+  expect(oneDescriptor.path).not.toBe(twoDescriptor.path)
+  expect(await readFile(join(one.directories.root, 'instance.json'), 'utf8')).not.toContain('private-agent-token')
   expect((one.endpoint?.capabilities as { capabilities: { home: string; display: string; custom: string; runtime: string } }).capabilities).toEqual({ home: one.directories.home, display: one.display, custom: 'yes', runtime: 'wry' })
   const cefArtifact = { ...artifact, key: '9'.repeat(64) }
   const cef = await createInstance(CONFIG, root, { ...revision, worktree: worktreeTwo, commit: '8'.repeat(40) }, 'cef', cefArtifact, 'cef')
@@ -205,11 +212,19 @@ test('dashboard validates opaque routes and forwards binary VNC traffic', async 
   const address = tcp.address()
   if (!address || typeof address === 'string') throw new Error('missing TCP port')
   const token = 'A'.repeat(32)
-  const instance = fakeInstance(root, [], { vncPort: address.port, vncToken: token, state: 'stopped' })
+  const instance = fakeInstance(root, [], {
+    vncPort: address.port,
+    vncToken: token,
+    state: 'stopped',
+    endpoint: { healthy: false, descriptor: { token: 'legacy-agent-token' } } as InstanceRecord['endpoint']
+  })
   await saveInstance(root, instance)
-  const web = startDashboard({ root, assets, host: '127.0.0.1', port: 0 })
+  const web = startDashboard({ root, assets, appId: CONFIG.agent.appId, host: '127.0.0.1', port: 0 })
   cleanups.push(() => { web.stop(true); tcp.close() })
   expect(await (await fetch(new URL('/', web.url))).text()).toBe('fleet dashboard')
+  const state = await (await fetch(new URL('/api/state', web.url))).text()
+  expect(state).not.toContain('legacy-agent-token')
+  expect(await readFile(join(instance.directories.root, 'instance.json'), 'utf8')).not.toContain('legacy-agent-token')
   expect((await fetch(new URL('/websockify?token=branch-name', web.url))).status).toBe(404)
   const echoed = await new Promise<number[]>((resolve, reject) => {
     const ws = new WebSocket(new URL(`/websockify?token=${token}`, web.url).toString().replace('http:', 'ws:'))
