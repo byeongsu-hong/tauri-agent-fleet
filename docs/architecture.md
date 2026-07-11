@@ -152,7 +152,15 @@ FLEET_HOME
 FLEET_RUNTIME_DIR
 FLEET_DISPLAY
 FLEET_APP_PORT
+FLEET_APP_DATA
+FLEET_VNC_PORT
 ```
+
+Build and instance hooks additionally receive `FLEET_ARTIFACT_DIR` and
+`FLEET_ARTIFACT_MANIFEST`. The build command must place reusable output inside
+the former and write a v1 manifest to the latter. Manifest `executable` and
+optional `cwd` paths are relative to, and confined within, the artifact
+directory.
 
 Hooks may prepare product state but must not start Xvfb, VNC, the Fleet server,
 or the dashboard.

@@ -1,0 +1,35 @@
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #0a0c10; color: #eef0f5; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; background: radial-gradient(circle at 50% -20%, #27304a 0, #0a0c10 45%); min-height: 100vh; }
+main { max-width: 1600px; margin: auto; padding: 32px; }
+.topbar { display: flex; align-items: end; justify-content: space-between; border-bottom: 1px solid #292d36; padding-bottom: 20px; margin-bottom: 24px; }
+h1 { font-size: 40px; margin: 0; letter-spacing: -.04em; }
+.eyebrow { color: #7c91ff; font-size: 11px; letter-spacing: .2em; margin: 0 0 4px; }
+.toolbar { display: flex; align-items: center; gap: 16px; color: #9aa1af; }
+button { color: #e8eaf0; border: 1px solid #3a4050; border-radius: 8px; background: #171a21; padding: 8px 12px; cursor: pointer; }
+button:hover { border-color: #7288ff; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: 18px; }
+.groups { display: grid; gap: 30px; }
+.groups h2 { color: #aeb5c5; font-size: 14px; text-transform: uppercase; letter-spacing: .08em; }
+.tile { overflow: hidden; border: 1px solid #282d37; border-radius: 12px; background: #11141a; box-shadow: 0 12px 40px #0007; }
+.tile > header { padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; }
+.tile strong, .tile small { display: block; }
+.tile small { color: #7e8696; margin-top: 2px; font-family: ui-monospace, monospace; }
+.state { border-radius: 999px; padding: 4px 9px; background: #252a35; color: #bac0cd; font-size: 11px; text-transform: uppercase; }
+.passed .state { background: #143627; color: #76e2ac; }
+.failed .state { background: #401e24; color: #ff98a3; }
+.running .state, .ready .state { background: #182d50; color: #91b7ff; }
+.screen { width: 100%; aspect-ratio: 16/10; background: #050608; overflow: hidden; display: block; }
+.screen canvas { width: 100% !important; height: 100% !important; object-fit: contain; }
+.failure-shot img { width: 100%; height: 100%; object-fit: contain; }
+.placeholder { display: grid; place-items: center; color: #555d6c; }
+dl { margin: 0; padding: 14px 16px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; border-top: 1px solid #20242d; }
+dl div { min-width: 0; }
+dt { color: #697181; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+dd { margin: 3px 0 0; font: 12px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; }
+.message { margin: 0; padding: 0 16px 14px; color: #ff98a3; font-size: 12px; }
+nav { border-top: 1px solid #20242d; padding: 10px 16px; display: flex; gap: 14px; }
+a { color: #91a9ff; font-size: 12px; }
+.empty { color: #8b93a2; text-align: center; margin: 15vh auto; }
+code { background: #171b23; padding: 2px 5px; border-radius: 4px; }
+@media (max-width: 600px) { main { padding: 18px; } .topbar { align-items: flex-start; gap: 16px; } .toolbar { align-items: flex-end; flex-direction: column; } dl { grid-template-columns: repeat(2, 1fr); } }
