@@ -16,6 +16,15 @@ export async function processOwned(record: ProcessRecord): Promise<boolean> {
   return Boolean(identity && identity.pgid === record.pgid && identity.startTime === record.startTime)
 }
 
+function processGroupAlive(pgid: number): boolean {
+  try { process.kill(-pgid, 0); return true } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ESRCH') return false
+    if (code === 'EPERM') return true
+    throw error
+  }
+}
+
 export async function spawnOwned(
   name: ProcessRecord['name'],
   command: string[],
@@ -38,6 +47,7 @@ export async function spawnOwned(
   child.unref()
   const identity = await processIdentity(child.pid!)
   if (!identity) throw new Error(`${name} exited during startup`)
+  if (identity.pgid !== child.pid) { child.kill('SIGKILL'); throw new Error(`${name} did not start in its own process group`) }
   return { name, pid: child.pid!, pgid: identity.pgid, startTime: identity.startTime, command }
 }
 
@@ -49,10 +59,10 @@ export async function terminateOwned(record: ProcessRecord, graceMs = 5_000): Pr
   }
   const deadline = Date.now() + graceMs
   while (Date.now() < deadline) {
-    if (!await processOwned(record)) return true
+    if (!processGroupAlive(record.pgid)) return true
     await Bun.sleep(50)
   }
-  if (await processOwned(record)) {
+  if (processGroupAlive(record.pgid)) {
     try { process.kill(-record.pgid, 'SIGKILL') } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
     }

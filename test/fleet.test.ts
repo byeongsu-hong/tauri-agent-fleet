@@ -15,12 +15,13 @@ import { buildArtifact } from '../src/build.ts'
 import { runCommand } from '../src/command.ts'
 import { artifactKey, dirtyFingerprint, discoverRevision } from '../src/revision.ts'
 import { parseAction, parseArtifactManifest, parseConfig, parseSuite } from '../src/schema.ts'
-import { processOwned, spawnOwned, terminateOwned } from '../src/process.ts'
+import { processIdentity, processOwned, spawnOwned, terminateOwned } from '../src/process.ts'
 import { createInstance, stopInstance } from '../src/instance.ts'
 import { privateDir, saveInstance } from '../src/storage.ts'
 import { startDashboard } from '../src/server.ts'
 import { runSuite, type NextAction } from '../src/runner.ts'
 import { defaultVariant } from '../src/scheduler.ts'
+import { waitFor } from '../src/network.ts'
 import { openAIAction } from '../src/provider.ts'
 import type { FleetConfig, InstanceRecord, ProcessRecord, Suite } from '../src/types.ts'
 
@@ -122,6 +123,23 @@ test('exact teardown does not touch sibling groups or stale PID records', async 
   expect(await terminateOwned(one, 200)).toBe(true)
   expect(await processOwned(one)).toBe(false)
   expect(await processOwned(two)).toBe(true)
+})
+
+test('teardown kills descendants after the process-group leader exits', async () => {
+  const dir = await temporary()
+  const childFile = join(dir, 'child.pid')
+  const record = await spawnOwned('app', ['bash', '-c', `trap 'exit 0' TERM; (trap '' TERM; echo "$BASHPID" > "$CHILD_PID_FILE"; exec sleep 30) & wait`], {
+    env: { ...process.env, CHILD_PID_FILE: childFile },
+    log: join(dir, 'group.log')
+  })
+  cleanups.push(() => { try { process.kill(-record.pgid, 'SIGKILL') } catch { /* already gone */ } })
+  let childPid = 0
+  await waitFor(async () => {
+    try { childPid = Number(await readFile(childFile, 'utf8')); return childPid > 0 } catch { return false }
+  }, 1_000, 'child PID')
+  expect(record.pgid).toBe(record.pid)
+  expect(await terminateOwned(record, 50)).toBe(true)
+  await waitFor(async () => !await processIdentity(childPid), 1_000, 'descendant teardown')
 })
 
 test('parallel same-artifact instances isolate slots, state, endpoints, and teardown', async () => {
