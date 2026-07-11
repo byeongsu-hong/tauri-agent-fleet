@@ -1,11 +1,12 @@
 import type { DebuggerClient } from '@byeongsu-hong/tauri-agent-plugin/daemon'
 import type { IpcEntry, ScreenshotResult, StreamResult, TreeResult } from '@byeongsu-hong/tauri-agent-plugin/protocol'
 import { attachAgent, executeAction } from './agent.ts'
-import type { ModelDecision, RunnerContext } from './provider.ts'
+import type { ModelDecision, ModelUsage, RunnerContext } from './provider.ts'
 import { appendJsonLine, atomicJson, privateDir, saveInstance } from './storage.ts'
 import { processOwned } from './process.ts'
 import type { FailureClass, InstanceRecord, Suite, SuccessCondition } from './types.ts'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { writeFile } from 'node:fs/promises'
 
 export type NextAction = (context: RunnerContext) => Promise<ModelDecision>
@@ -13,13 +14,20 @@ export type NextAction = (context: RunnerContext) => Promise<ModelDecision>
 async function conditionMet(client: DebuggerClient, condition: SuccessCondition): Promise<boolean> {
   if ('state' in condition) {
     const value = await client.call('state', { key: condition.state.key })
-    return JSON.stringify(value) === JSON.stringify(condition.state.equals)
+    return isDeepStrictEqual(value, condition.state.equals)
   }
   if ('ipc' in condition) throw new Error('IPC conditions are evaluated together')
   try { await client.call('expect', { ...condition.expect }); return true } catch { return false }
 }
 
 interface AssertionState { ipcCursor?: number; ipcMatches: Set<number> }
+
+function validateUsage(usage: ModelUsage): void {
+  for (const [name, value] of [['inputTokens', usage.inputTokens], ['outputTokens', usage.outputTokens]] as const) {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`model usage ${name} must be a non-negative safe integer`)
+  }
+  if (usage.cost !== undefined && (!Number.isFinite(usage.cost) || usage.cost < 0)) throw new Error('model usage cost must be a non-negative finite number')
+}
 
 async function passed(client: DebuggerClient, conditions: SuccessCondition[], state: AssertionState): Promise<boolean> {
   const ipcConditions = conditions.map((condition, index) => ({ condition, index })).filter((entry) => 'ipc' in entry.condition)
@@ -124,6 +132,7 @@ export async function runSuite(
               ...(suite.limits.tokens === undefined ? {} : { tokens: Math.max(0, suite.limits.tokens - used) })
             }
           })
+          validateUsage(decision.usage)
         } catch (error) {
           failure = 'runner_failure'; message = error instanceof Error ? error.message : String(error); break
         }

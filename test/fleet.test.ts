@@ -324,13 +324,19 @@ test('mock-model run passes by deterministic assertion and persists lean artifac
   expect(JSON.parse(await readFile(join(dir, 'run.json'), 'utf8')).state).toBe('passed')
 })
 
-test('app timeouts and repeated model actions have distinct failure classes', async () => {
+test('app timeouts, invalid usage, and repeated model actions have distinct failure classes', async () => {
   const appHarness = await runnerHarness()
   cleanups.push(appHarness.close)
   const wait: NextAction = async () => ({ action: { type: 'wait', milliseconds: 1000 }, usage: { inputTokens: 1, outputTokens: 1 }, raw: {} })
   const appSuite: Suite = { id: 'app-timeout', goal: 'Impossible', success: UNREACHABLE, limits: { steps: 5, seconds: 1, repetitions: 5 } }
   const appResult = await runSuite(appHarness.root, CONFIG.agent.appId, appHarness.instance, appSuite, wait)
   expect(appResult.run?.failure).toBe('app_failure')
+
+  const usageHarness = await runnerHarness()
+  cleanups.push(usageHarness.close)
+  const invalidUsage: NextAction = async () => ({ action: { type: 'wait', milliseconds: 1 }, usage: { inputTokens: -1, outputTokens: 1 }, raw: {} })
+  const usageResult = await runSuite(usageHarness.root, CONFIG.agent.appId, usageHarness.instance, { ...appSuite, id: 'invalid-usage', limits: { ...appSuite.limits, seconds: 5 } }, invalidUsage)
+  expect(usageResult.run).toMatchObject({ failure: 'runner_failure', inputTokens: 0, outputTokens: 0 })
 
   const runnerHarnessValue = await runnerHarness()
   cleanups.push(runnerHarnessValue.close)
