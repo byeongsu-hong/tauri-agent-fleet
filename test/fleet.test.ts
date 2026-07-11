@@ -351,10 +351,12 @@ test('mock-model run passes by deterministic assertion and persists lean artifac
 test('app timeouts, invalid usage, and repeated model actions have distinct failure classes', async () => {
   const appHarness = await runnerHarness()
   cleanups.push(appHarness.close)
-  const wait: NextAction = async () => ({ action: { type: 'wait', milliseconds: 1000 }, usage: { inputTokens: 1, outputTokens: 1 }, raw: {} })
+  const wait: NextAction = async () => await new Promise<never>(() => {})
   const appSuite: Suite = { id: 'app-timeout', goal: 'Impossible', success: UNREACHABLE, limits: { steps: 5, seconds: 1, repetitions: 5 } }
+  const started = Date.now()
   const appResult = await runSuite(appHarness.root, CONFIG.agent.appId, appHarness.instance, appSuite, wait)
   expect(appResult.run?.failure).toBe('app_failure')
+  expect(Date.now() - started).toBeLessThan(2_000)
 
   const usageHarness = await runnerHarness()
   cleanups.push(usageHarness.close)
