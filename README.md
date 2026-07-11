@@ -11,8 +11,9 @@ runner, and expose every live screen and run state in one dashboard.
 
 Fleet is runnable on Linux/X11. It provides the generic CLI, build cache,
 isolated process lifecycle, bounded suite scheduler, deterministic runner,
-artifacts, and read-only noVNC dashboard. Ducktape's old implementation remains
-the rollback path until the product-owned side-by-side cutover is complete.
+artifacts, and read-only noVNC dashboard. Ducktape completed its product-owned
+cutover in [orthory/ducktape#419](https://github.com/orthory/ducktape/pull/419)
+and now retains only its Fleet config, hooks, and suites.
 
 Extraction baselines:
 

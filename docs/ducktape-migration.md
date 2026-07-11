@@ -1,5 +1,13 @@
 # Ducktape migration
 
+## Cutover status
+
+The cutover completed in
+[`orthory/ducktape#419`](https://github.com/orthory/ducktape/pull/419). Ducktape
+now owns only its Fleet configuration, CEF hooks, and suites; the embedded
+scripts and dashboard listed below were removed. Rollback is a revert of that
+PR, not a second live Fleet implementation.
+
 ## Source baseline
 
 Plan the extraction from Ducktape `origin/dev` commit:
@@ -13,9 +21,9 @@ repository was bootstrapped. Perform migration work from a fresh isolated
 worktree based on the latest `origin/dev`. Do not touch or clean the primary
 checkout's unrelated changes.
 
-## Current source inventory
+## Source inventory at extraction
 
-Generic Fleet source currently lives at:
+Generic Fleet source originally lived at:
 
 ```text
 ops/fleet.sh
@@ -38,7 +46,7 @@ describe what happened at the time and should not be rewritten as active docs.
 
 ## Coupling to remove
 
-The current prototype assumes:
+The extracted prototype assumed:
 
 - a project directory named `app`;
 - base branch `dev`;
@@ -124,7 +132,5 @@ clean context, and merge only when the Wry/CEF and isolation gates are green.
 
 ## Rollback
 
-The extraction and removal are separate changes. Until the removal PR merges,
-the old Fleet is the rollback path. After removal, rollback means reverting only
-the Ducktape cutover PR and restoring its pinned Fleet invocation; no plugin
-release should need to be reverted if protocol compatibility is maintained.
+Revert Ducktape PR #419 and restore its previous pinned Fleet invocation. No
+plugin release needs to be reverted while protocol compatibility is maintained.
