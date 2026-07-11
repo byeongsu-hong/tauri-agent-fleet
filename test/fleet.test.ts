@@ -289,6 +289,7 @@ test('provider sends lean structured context and records reported usage and cost
   expect(decision.action).toEqual({ type: 'click', role: 'button', name: 'Save' })
   expect(decision.usage).toEqual({ inputTokens: 100, outputTokens: 20, cost: 0.00014 })
   expect(requestBody?.store).toBe(false)
+  expect(requestBody?.max_output_tokens).toBe(100)
   expect((requestBody?.text as { format: { type: string } }).format.type).toBe('json_schema')
   expect(JSON.parse(requestBody?.input as string)).toEqual({ goal: 'Save', success: [{ state: { key: 'saved', equals: true } }], observation: { snapshot: 'button Save' }, remaining: { steps: 2, seconds: 5, tokens: 1000 } })
 })
