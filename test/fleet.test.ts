@@ -21,7 +21,7 @@ import { privateDir, saveInstance } from '../src/storage.ts'
 import { startDashboard } from '../src/server.ts'
 import { runSuite, type NextAction } from '../src/runner.ts'
 import { defaultVariant } from '../src/scheduler.ts'
-import { waitFor } from '../src/network.ts'
+import { freePort, waitFor } from '../src/network.ts'
 import { openAIAction } from '../src/provider.ts'
 import type { FleetConfig, InstanceRecord, ProcessRecord, Suite } from '../src/types.ts'
 
@@ -39,6 +39,11 @@ const CONFIG: FleetConfig = {
   agent: { appId: 'com.example.app' },
   variants: { wry: { build: ['true'] }, cef: { build: ['true'] } }
 }
+
+test('port allocation honors active exclusions', async () => {
+  const first = await freePort()
+  expect(await freePort(new Set([first]))).not.toBe(first)
+})
 
 describe('trust-boundary schemas', () => {
   test('accepts v1 config and suites, rejects unsafe or unbounded input', () => {
