@@ -60,7 +60,7 @@ export async function openAIAction(context: RunnerContext): Promise<ModelDecisio
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
       store: false,
-      max_output_tokens: 200,
+      max_output_tokens: 100,
       instructions: 'Choose exactly one safe UI action toward the goal. Never use shell or JavaScript. Use wait only for brief UI settling.',
       input: JSON.stringify(context),
       text: { format: { type: 'json_schema', name: 'next_action', strict: true, schema: ACTION_SCHEMA } }
