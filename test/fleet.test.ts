@@ -19,6 +19,7 @@ import { createInstance, stopInstance } from '../src/instance.ts'
 import { privateDir, saveInstance } from '../src/storage.ts'
 import { startDashboard } from '../src/server.ts'
 import { runSuite, type NextAction } from '../src/runner.ts'
+import { defaultVariant } from '../src/scheduler.ts'
 import { openAIAction } from '../src/provider.ts'
 import type { FleetConfig, InstanceRecord, ProcessRecord, Suite } from '../src/types.ts'
 
@@ -40,7 +41,9 @@ const CONFIG: FleetConfig = {
 describe('trust-boundary schemas', () => {
   test('accepts v1 config and suites, rejects unsafe or unbounded input', () => {
     expect(parseConfig(CONFIG)).toEqual(CONFIG)
-    expect(parseConfig({ schemaVersion: 1, agent: { appId: 'com.example.cef' }, variants: { cef: { build: ['true'] } } }).variants.wry).toBeUndefined()
+    const cefOnly = parseConfig({ schemaVersion: 1, agent: { appId: 'com.example.cef' }, variants: { cef: { build: ['true'] } } })
+    expect(cefOnly.variants.wry).toBeUndefined()
+    expect(defaultVariant(cefOnly)).toBe('cef')
     expect(() => parseConfig({ ...CONFIG, schemaVersion: 2 })).toThrow('schemaVersion')
     expect(() => parseConfig({ ...CONFIG, variants: { wry: { build: 'bun build' } } })).toThrow('string array')
     const suite = parseSuite({

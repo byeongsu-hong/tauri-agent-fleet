@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { buildArtifact } from './build.ts'
 import { createInstance, refreshInstance, stopInstance } from './instance.ts'
 import { discoverRevision } from './revision.ts'
-import { runSuites } from './scheduler.ts'
+import { defaultVariant, runSuites } from './scheduler.ts'
 import { startDashboard } from './server.ts'
 import { listInstances, loadConfig, loadSuite, stateRoot } from './storage.ts'
 import type { RuntimeVariant } from './types.ts'
@@ -43,12 +43,6 @@ function variant(value: string | undefined): RuntimeVariant | undefined {
   if (value === undefined) return undefined
   if (value !== 'wry' && value !== 'cef') throw new Error('--variant must be wry or cef')
   return value
-}
-
-function defaultVariant(config: { variants: Partial<Record<RuntimeVariant, unknown>> }): RuntimeVariant {
-  if (config.variants.wry) return 'wry'
-  if (config.variants.cef) return 'cef'
-  throw new Error('no runtime variant is configured')
 }
 
 async function assetsPath(): Promise<string> {
