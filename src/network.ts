@@ -1,15 +1,18 @@
 import { createServer, createConnection } from 'node:net'
 
-export async function freePort(): Promise<number> {
-  const server = createServer()
-  return await new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      if (!address || typeof address === 'string') return reject(new Error('failed to allocate port'))
-      server.close((error) => error ? reject(error) : resolve(address.port))
+export async function freePort(excluded: ReadonlySet<number> = new Set()): Promise<number> {
+  while (true) {
+    const server = createServer()
+    const port = await new Promise<number>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address()
+        if (!address || typeof address === 'string') return reject(new Error('failed to allocate port'))
+        server.close((error) => error ? reject(error) : resolve(address.port))
+      })
     })
-  })
+    if (!excluded.has(port)) return port
+  }
 }
 
 export async function portOpen(port: number): Promise<boolean> {

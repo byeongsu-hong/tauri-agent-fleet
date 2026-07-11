@@ -16,11 +16,15 @@ function safeId(value: string): string {
   return slug || 'instance'
 }
 
-async function nextSlot(root: string): Promise<number> {
-  const used = new Set((await listInstances(root)).filter((item) => ACTIVE.has(item.state)).map((item) => item.slot))
+async function nextAllocation(root: string): Promise<{ slot: number; vncPort: number; appPort: number }> {
+  const active = (await listInstances(root)).filter((item) => ACTIVE.has(item.state))
+  const used = new Set(active.map((item) => item.slot))
   let slot = 0
   while (used.has(slot) || await displayExists(90 + slot)) slot++
-  return slot
+  const ports = new Set(active.flatMap((item) => [item.vncPort, item.appPort]))
+  const vncPort = await freePort(ports)
+  ports.add(vncPort)
+  return { slot, vncPort, appPort: await freePort(ports) }
 }
 
 async function displayExists(display: number): Promise<boolean> {
@@ -36,7 +40,7 @@ export async function createInstance(
   requestedId?: string
 ): Promise<InstanceRecord> {
   const instance = await withLock(join(root, '.instance-allocation.lock'), async () => {
-    const slot = await nextSlot(root)
+    const { slot, vncPort, appPort } = await nextAllocation(root)
     const id = `${safeId(requestedId ?? revision.branch ?? basename(revision.worktree))}-${randomBytes(4).toString('hex')}`
     const base = join(root, 'instances', id)
     const directories = {
@@ -59,8 +63,8 @@ export async function createInstance(
       updatedAt: now,
       slot,
       display: `:${90 + slot}`,
-      vncPort: await freePort(),
-      appPort: await freePort(),
+      vncPort,
+      appPort,
       vncToken: randomBytes(24).toString('base64url'),
       directories,
       processes: []
