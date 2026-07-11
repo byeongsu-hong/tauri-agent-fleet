@@ -2,10 +2,10 @@ import { parseAction } from './schema.ts'
 import type { RunnerAction, SuccessCondition } from './types.ts'
 
 export interface ModelUsage { inputTokens: number; outputTokens: number; cost?: number }
-export interface ModelDecision { action: RunnerAction; usage: ModelUsage; raw: unknown }
+export interface ModelDecision { action: RunnerAction; usage: ModelUsage }
 export interface RunnerContext {
-  goal: string
-  success: SuccessCondition[]
+  objective: string
+  pass: SuccessCondition[]
   observation: unknown
   previousAction?: { action: RunnerAction; result: unknown }
   remaining: { steps: number; seconds: number; tokens?: number }
@@ -53,6 +53,11 @@ export async function openAIAction(context: RunnerContext): Promise<ModelDecisio
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) throw new Error('OPENAI_API_KEY is required')
   const base = (process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/$/, '')
+  const inputRate = Number(process.env.OPENAI_INPUT_COST_PER_MILLION ?? 0)
+  const outputRate = Number(process.env.OPENAI_OUTPUT_COST_PER_MILLION ?? 0)
+  if (!Number.isFinite(inputRate) || inputRate < 0 || !Number.isFinite(outputRate) || outputRate < 0) {
+    throw new Error('OpenAI token costs must be non-negative finite numbers')
+  }
   const response = await fetch(`${base}/responses`, {
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
@@ -61,7 +66,7 @@ export async function openAIAction(context: RunnerContext): Promise<ModelDecisio
       model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
       store: false,
       max_output_tokens: 100,
-      instructions: 'Choose exactly one safe UI action toward the goal. Never use shell or JavaScript. Use wait only for brief UI settling.',
+      instructions: 'Choose exactly one safe UI action toward the objective. Never use shell or JavaScript. Use wait only for brief UI settling.',
       input: JSON.stringify(context),
       text: { format: { type: 'json_schema', name: 'next_action', strict: true, schema: ACTION_SCHEMA } }
     })
@@ -72,12 +77,9 @@ export async function openAIAction(context: RunnerContext): Promise<ModelDecisio
   const usage = (raw.usage ?? {}) as Record<string, unknown>
   const inputTokens = Number(usage.input_tokens ?? 0)
   const outputTokens = Number(usage.output_tokens ?? 0)
-  const inputRate = Number(process.env.OPENAI_INPUT_COST_PER_MILLION ?? 0)
-  const outputRate = Number(process.env.OPENAI_OUTPUT_COST_PER_MILLION ?? 0)
   const cost = (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000
   return {
     action: parseAction(cleanNulls(parsed)),
-    usage: { inputTokens, outputTokens, ...(inputRate || outputRate ? { cost } : {}) },
-    raw
+    usage: { inputTokens, outputTokens, ...(inputRate || outputRate ? { cost } : {}) }
   }
 }

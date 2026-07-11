@@ -74,6 +74,9 @@ Do not preserve these behaviors during extraction:
 4. Fixed sleeps substitute for readiness checks.
 5. Fleet metadata advertises a `tauri-agent observe` command that does not exist.
 6. Manual `fleet.json` refresh can leave dashboard state stale.
+7. Ducktape's workspace node detaches from the desktop process group and can
+   survive a Fleet stop unless a Ducktape-owned cleanup hook terminates its
+   recorded exact process group.
 
 ## Cutover sequence
 
@@ -90,12 +93,13 @@ Do not preserve these behaviors during extraction:
 Ducktape should retain only:
 
 ```text
-tauri-agent-fleet.json
+.tauri-agent/fleet.json
+.tauri-agent/suites/*.json
 qa/fleet/prepare-build.sh
 qa/fleet/prepare-instance.sh
+qa/fleet/cleanup-instance.ts
 qa/fleet/build-wry.sh
 qa/fleet/build-cef.sh
-qa/suites/*.json
 ```
 
 The exact hook count may shrink during implementation. Do not create an empty

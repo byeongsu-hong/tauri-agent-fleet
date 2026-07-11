@@ -120,7 +120,8 @@ dashboard use case.
 - random VNC route tokens;
 - dashboard static server and VNC WebSocket router;
 - process and plugin health checks instead of fixed sleeps;
-- stale-state recovery that verifies PID identity before cleanup.
+- stale-state recovery that verifies PID identity before cleanup;
+- an application cleanup hook for deliberately detached product process groups.
 
 ### Dashboard import
 
@@ -134,6 +135,7 @@ separate measured decision.
 - config validation;
 - slot/port allocation;
 - process ownership and exact teardown;
+- exact cleanup-hook teardown without touching sibling groups;
 - token router path validation and binary forwarding;
 - stale PID handling;
 - console unit tests;
@@ -150,7 +152,7 @@ Gate:
 - add Ducktape config and the minimum required product hooks;
 - stage/seed `ducktape-node` only from Ducktape-owned hooks;
 - validate two worktrees with isolated state;
-- validate Wry and CEF variants;
+- validate Wry and CEF runtimes;
 - compare the old and new dashboards;
 - fix active QA and upgrade runbooks;
 - do not remove old Fleet yet.
@@ -173,7 +175,7 @@ Introduce the target data model without changing the plugin boundary.
 
 Gate:
 
-- two suites can run simultaneously against the same revision and variant
+- two suites can run simultaneously against the same revision and runtime
   without source/build/data collisions.
 
 ## Phase 5: low-cost AI runner
@@ -186,11 +188,11 @@ Do not create a provider framework until a second provider is required.
 ### Loop
 
 1. Attach and negotiate capabilities.
-2. Send the goal, success conditions, and initial compact observation.
+2. Send the objective, pass conditions, and initial compact observation.
 3. Validate the model's next typed action.
 4. Execute the atomic plugin action.
 5. Send only the result and semantic delta/scoped observation.
-6. Evaluate deterministic success conditions.
+6. Evaluate deterministic pass conditions.
 7. Stop on pass, failure, timeout, repeated action, step limit, or token limit.
 
 ### Artifacts
@@ -227,7 +229,7 @@ Extend the dashboard model from worktrees to revisions, instances, and runs.
 
 Show:
 
-- branch/SHA and Wry/CEF variant;
+- branch/SHA and Wry/CEF runtime;
 - suite and lifecycle state;
 - current step and elapsed time;
 - input/output token usage and cost;
@@ -272,7 +274,7 @@ Recommended independently reviewable sequence:
 - Ducktape contains only config, hooks, and suites for Fleet.
 - Fleet has no Ducktape-specific hardcoding.
 - The plugin remains a single-application protocol and has no Fleet dependency.
-- Wry is the default runtime and CEF is an explicit tested variant.
+- the configured default runtime and both Wry/CEF paths are tested.
 - Several suites can execute against one build artifact with isolated state.
 - Stopping one instance cannot terminate another.
 - Pass/fail is deterministic even when navigation uses a model.

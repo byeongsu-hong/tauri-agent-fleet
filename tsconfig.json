@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
+    "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "types": ["bun", "vite/client"],
@@ -13,4 +14,3 @@
   },
   "include": ["src", "dashboard", "test", "vite.config.ts"]
 }
-

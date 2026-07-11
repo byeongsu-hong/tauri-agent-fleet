@@ -1,18 +1,35 @@
-import { access, readFile, rename, rm } from 'node:fs/promises'
+import { access, lstat, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { runCommand } from './command.ts'
-import { artifactKey } from './revision.ts'
+import { artifactKey, resolveInsideWorktree } from './revision.ts'
 import { parseArtifactManifest } from './schema.ts'
 import { atomicJson, privateDir, withLock } from './storage.ts'
 import type { ArtifactManifest, FleetConfig, Revision, RuntimeVariant } from './types.ts'
 
 export interface Artifact { key: string; dir: string; manifest: ArtifactManifest }
 
-async function validArtifact(dir: string): Promise<ArtifactManifest | undefined> {
+function inside(root: string, target: string): boolean {
+  const rel = relative(root, target)
+  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
+
+async function validArtifact(dir: string, containerRoot: string): Promise<ArtifactManifest | undefined> {
   try {
-    const manifest = parseArtifactManifest(JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8')), dir)
-    await access(resolve(dir, manifest.executable), constants.X_OK)
+    if (!(await lstat(dir)).isDirectory()) return undefined
+    const root = await realpath(dir)
+    if (!inside(containerRoot, root)) return undefined
+    const manifestPath = join(dir, 'manifest.json')
+    if (!(await lstat(manifestPath)).isFile()) return undefined
+    const manifestFile = await realpath(manifestPath)
+    if (!inside(root, manifestFile)) return undefined
+    const manifest = parseArtifactManifest(JSON.parse(await readFile(manifestFile, 'utf8')), dir)
+    const executable = await realpath(resolve(dir, manifest.executable))
+    const cwd = await realpath(resolve(dir, manifest.cwd ?? '.'))
+    if (![executable, cwd].every((target) => inside(root, target))) return undefined
+    const [executableStat, cwdStat] = await Promise.all([stat(executable), stat(cwd)])
+    if (!executableStat.isFile() || !cwdStat.isDirectory()) return undefined
+    await access(executable, constants.X_OK)
     return manifest
   } catch { return undefined }
 }
@@ -23,40 +40,52 @@ export async function buildArtifact(
   revision: Revision,
   variant: RuntimeVariant
 ): Promise<Artifact> {
-  const definition = config.variants[variant]
-  if (!definition) throw new Error(`variant is not configured: ${variant}`)
+  const definition = config.runtimes[variant]
+  if (!definition) throw new Error(`runtime is not configured: ${variant}`)
   const key = artifactKey(revision, variant)
-  const dir = join(root, 'artifacts', key)
-  const cached = await validArtifact(dir)
+  const container = join(root, 'artifacts')
+  const dir = join(container, key)
+  await privateDir(container)
+  const containerRoot = await realpath(container)
+  const cached = await validArtifact(dir, containerRoot)
   if (cached) return { key, dir, manifest: cached }
-  await privateDir(join(root, 'artifacts'))
   return await withLock(`${dir}.lock`, async () => {
-    const raced = await validArtifact(dir)
+    const raced = await validArtifact(dir, containerRoot)
     if (raced) return { key, dir, manifest: raced }
     const staging = `${dir}.${process.pid}.tmp`
     await rm(staging, { recursive: true, force: true })
     await privateDir(staging)
-    const project = resolve(revision.worktree, config.projectDir ?? '.')
-    const env = {
-      ...process.env,
-      FLEET_REVISION: revision.commit,
-      FLEET_VARIANT: variant,
-      FLEET_INSTANCE_ID: '',
-      FLEET_STATE_DIR: root,
-      FLEET_HOME: '',
-      FLEET_RUNTIME_DIR: '',
-      FLEET_DISPLAY: '',
-      FLEET_APP_PORT: '',
-      FLEET_ARTIFACT_DIR: staging,
-      FLEET_ARTIFACT_MANIFEST: join(staging, 'manifest.json')
-    }
-    if (config.hooks?.prepareBuild) await runCommand(config.hooks.prepareBuild, { cwd: project, env })
-    await runCommand(definition.build, { cwd: project, env })
-    const manifest = await validArtifact(staging)
-    if (!manifest) throw new Error(`build did not create a valid artifact at ${join(staging, 'manifest.json')}`)
-    await atomicJson(join(staging, 'build.json'), { schemaVersion: 1, key, revision, variant, builtAt: new Date().toISOString() })
-    await rm(dir, { recursive: true, force: true })
-    await rename(staging, dir)
-    return { key, dir, manifest }
+    try {
+      const project = await resolveInsideWorktree(revision.worktree, config.application.root)
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        FLEET_REVISION: revision.commit,
+        FLEET_RUNTIME: variant,
+        FLEET_INSTANCE_ID: '',
+        FLEET_STATE_DIR: root,
+        FLEET_HOME: '',
+        FLEET_RUNTIME_DIR: '',
+        FLEET_DISPLAY: '',
+        FLEET_APP_PORT: '',
+        FLEET_APP_DATA: '',
+        FLEET_VNC_PORT: '',
+        FLEET_ARTIFACT_DIR: staging,
+        FLEET_ARTIFACT_MANIFEST: join(staging, 'manifest.json')
+      }
+      delete env.OPENAI_API_KEY
+      if (config.lifecycle?.prepareBuild) await runCommand(config.lifecycle.prepareBuild, { cwd: project, env })
+      await runCommand(definition.build, { cwd: project, env })
+      const manifest = await validArtifact(staging, containerRoot)
+      if (!manifest) throw new Error(`build did not create a valid artifact at ${join(staging, 'manifest.json')}`)
+      await atomicJson(join(staging, 'build.json'), { schemaVersion: 1, key, revision, variant, builtAt: new Date().toISOString() })
+      await rm(dir, { recursive: true, force: true })
+      await rename(staging, dir)
+      const installed = await validArtifact(dir, containerRoot)
+      if (!installed) {
+        await rm(dir, { recursive: true, force: true })
+        throw new Error(`artifact became invalid after installation: ${dir}`)
+      }
+      return { key, dir, manifest: installed }
+    } finally { await rm(staging, { recursive: true, force: true }) }
   }, 10 * 60_000)
 }

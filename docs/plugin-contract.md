@@ -24,7 +24,7 @@ extension. New fields may be top-level or grouped below `capabilities`:
 ```
 
 `runtime` may be `wry`, `cef`, or `unknown`. Fleet does not infer capabilities
-from the selected build variant. An advertised `act` method means the plugin can
+from the selected runtime. An advertised `act` method means the plugin can
 resolve a locator and perform its typed action atomically. Fleet retains the
 baseline `find` plus ref-action fallback for older compatible releases.
 

@@ -3,6 +3,10 @@ import { closeSync, openSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import type { ProcessRecord } from './types.ts'
 
+function validRecord(record: ProcessRecord): boolean {
+  return Number.isSafeInteger(record.pid) && record.pid > 1 && record.pgid === record.pid && Boolean(record.startTime)
+}
+
 export async function processIdentity(pid: number): Promise<{ pgid: number; startTime: string } | undefined> {
   try {
     const stat = await readFile(`/proc/${pid}/stat`, 'utf8')
@@ -12,6 +16,7 @@ export async function processIdentity(pid: number): Promise<{ pgid: number; star
 }
 
 export async function processOwned(record: ProcessRecord): Promise<boolean> {
+  if (!validRecord(record)) return false
   const identity = await processIdentity(record.pid)
   return Boolean(identity && identity.pgid === record.pgid && identity.startTime === record.startTime)
 }
@@ -32,13 +37,14 @@ export async function spawnOwned(
 ): Promise<ProcessRecord> {
   if (!command[0]) throw new Error(`empty ${name} command`)
   const log = openSync(options.log, 'a', 0o600)
-  const child = spawn(command[0], command.slice(1), {
-    cwd: options.cwd,
-    env: options.env,
-    detached: true,
-    stdio: ['ignore', log, log]
-  })
+  let child: ReturnType<typeof spawn>
   try {
+    child = spawn(command[0], command.slice(1), {
+      cwd: options.cwd,
+      env: options.env,
+      detached: true,
+      stdio: ['ignore', log, log]
+    })
     await new Promise<void>((resolve, reject) => {
       child.once('spawn', resolve)
       child.once('error', reject)
@@ -52,7 +58,9 @@ export async function spawnOwned(
 }
 
 export async function terminateOwned(record: ProcessRecord, graceMs = 5_000): Promise<boolean> {
-  if (!await processOwned(record)) return false
+  if (!validRecord(record)) return false
+  const identity = await processIdentity(record.pid)
+  if (identity ? identity.pgid !== record.pgid || identity.startTime !== record.startTime : !processGroupAlive(record.pgid)) return false
   try { process.kill(-record.pgid, 'SIGTERM') } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true
     throw error
@@ -66,10 +74,20 @@ export async function terminateOwned(record: ProcessRecord, graceMs = 5_000): Pr
     try { process.kill(-record.pgid, 'SIGKILL') } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
     }
+    const killDeadline = Date.now() + Math.max(1_000, graceMs)
+    while (Date.now() < killDeadline) {
+      if (!processGroupAlive(record.pgid)) return true
+      await Bun.sleep(10)
+    }
+    if (processGroupAlive(record.pgid)) throw new Error(`${record.name} process group ${record.pgid} survived SIGKILL`)
   }
   return true
 }
 
 export async function terminateAll(records: ProcessRecord[]): Promise<void> {
-  for (const record of [...records].reverse()) await terminateOwned(record)
+  let failure: unknown
+  for (const record of [...records].reverse()) {
+    try { await terminateOwned(record) } catch (error) { failure ??= error }
+  }
+  if (failure) throw failure
 }

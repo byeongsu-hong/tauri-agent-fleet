@@ -1,7 +1,5 @@
 export type RuntimeVariant = 'wry' | 'cef'
 export type LifecycleState =
-  | 'queued'
-  | 'building'
   | 'booting'
   | 'ready'
   | 'running'
@@ -12,20 +10,18 @@ export type LifecycleState =
 export type FailureClass = 'app_failure' | 'runner_failure' | 'infrastructure_failure'
 
 export interface FleetConfig {
-  schemaVersion: 1
-  baseBranch?: string
-  projectDir?: string
-  stateDir?: string
-  agent: { appId: string }
-  hooks?: {
+  protocol: 'tauri-agent-fleet/v1'
+  application: { id: string; root: string }
+  lifecycle?: {
     prepareBuild?: string[]
     prepareInstance?: string[]
+    cleanupInstance?: string[]
   }
-  variants: Partial<Record<RuntimeVariant, { build: string[] }>>
+  runtimes: Partial<Record<RuntimeVariant, { build: string[] }>> & { default: RuntimeVariant }
 }
 
 export interface ArtifactManifest {
-  schemaVersion: 1
+  protocol: 'tauri-agent-artifact/v1'
   executable: string
   args?: string[]
   cwd?: string
@@ -52,11 +48,12 @@ export type SuccessCondition =
   | { expect: Locator & { present?: boolean; value?: string; hasState?: string } }
 
 export interface Suite {
+  protocol: 'tauri-agent-suite/v1'
   id: string
-  variant?: RuntimeVariant
-  goal: string
-  success: SuccessCondition[]
-  limits: { steps: number; seconds: number; tokens?: number; repetitions?: number }
+  runtime?: RuntimeVariant
+  objective: string
+  pass: SuccessCondition[]
+  budget: { steps: number; seconds: number; tokens?: number; repetitions?: number }
 }
 
 export interface Revision {
@@ -92,20 +89,19 @@ export interface InstanceRecord {
   directories: { root: string; home: string; runtime: string; data: string; artifacts: string }
   processes: ProcessRecord[]
   endpoint?: { healthy: boolean; capabilities?: unknown }
+  failure?: { class: FailureClass; message: string }
   run?: {
     id: string
     suite: string
+    objective: string
     step: number
     startedAt: string
+    finishedAt?: string
+    budget: Suite['budget']
     inputTokens: number
     outputTokens: number
     cost?: number
     failure?: FailureClass
     message?: string
   }
-}
-
-export interface FleetSnapshot {
-  generatedAt: string
-  instances: InstanceRecord[]
 }
