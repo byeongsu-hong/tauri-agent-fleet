@@ -187,6 +187,8 @@ function instanceEnvironment(root: string, instance: InstanceRecord, artifactDir
     FLEET_ARTIFACT_MANIFEST: join(artifactDir, 'manifest.json')
   }
   delete env.OPENAI_API_KEY
+  delete env.ANTHROPIC_API_KEY
+  delete env.CLAUDE_CODE_OAUTH_TOKEN
   return env
 }
 

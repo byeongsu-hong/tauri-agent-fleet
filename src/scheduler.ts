@@ -1,6 +1,6 @@
 import { buildArtifact } from './build.ts'
 import { createInstance, teardownInstance } from './instance.ts'
-import { openAIAction } from './provider.ts'
+import { modelAction } from './provider.ts'
 import { runSuite, type NextAction } from './runner.ts'
 import { saveInstance } from './storage.ts'
 import type { FleetConfig, InstanceRecord, Revision, RuntimeVariant, Suite } from './types.ts'
@@ -29,7 +29,7 @@ export async function runSuites(
       const artifact = artifacts.get(task.variant)!
       const instance = await createInstance(config, root, revision, task.variant, artifact, task.suite.id)
       try {
-        results.push(await runSuite(root, config.application.id, instance, task.suite, options.nextAction ?? openAIAction))
+        results.push(await runSuite(root, config.application.id, instance, task.suite, options.nextAction ?? modelAction))
       } finally {
         try { await teardownInstance(config, root, instance) } catch (error) {
           if (instance.run) {
