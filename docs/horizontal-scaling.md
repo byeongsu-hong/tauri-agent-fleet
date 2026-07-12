@@ -171,7 +171,7 @@ the token, keeping it out of process listings and shell history.
 | H2 | Global limit | With `max-active=1`, a second claim is empty until finish or expiry. |
 | H3 | Lease recovery | Expired work requeues; stale heartbeat/upload/finish receive conflict; third expiry fails infrastructure. |
 | H4 | Repository safety | Dirty submit, wrong repository, missing commit, unsafe suite, and runtime mismatch are rejected. |
-| H5 | Worker isolation | Two worker state roots run the same artifact without HOME/XDG/display/port/endpoint collisions. |
+| H5 | Worker isolation | Two worker processes share one host allocator and run the same artifact without HOME/XDG/display/port/endpoint collisions; different hosts retain independent roots. |
 | H6 | Exact teardown | Stopping one worker job leaves its sibling alive; worker interruption leaves no owned process group after repair. |
 | H7 | Shared cache | Two workers requesting one revision/runtime execute the build command once and consume the same immutable artifact. |
 | H8 | Evidence | Passed and failed jobs retain bounded run/action/usage/semantic/console/network/IPC/replay/screenshot evidence. |

@@ -126,7 +126,7 @@ async function main(): Promise<number> {
     try {
       await runWorker({
         client: new CoordinatorClient(url, coordinatorToken()), config: loaded.config, repository,
-        root: join(root, 'workers', id), id, jobs, once, signal: controller.signal
+        root: join(root, 'worker'), id, jobs, once, signal: controller.signal
       })
     } finally {
       process.off('SIGINT', stop)

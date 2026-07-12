@@ -127,7 +127,7 @@ Horizontal mode keeps the same instance manager and runner on each Linux host.
 An authenticated coordinator owns only immutable job inputs, atomic leases,
 global capacity, terminal summaries, and bounded uploaded evidence. Worker
 processes own local checkout resolution, shared/private build-cache access,
-isolated state roots, exact process groups, heartbeats, execution, upload, and
+host-local state with isolated instance roots, exact process groups, heartbeats, execution, upload, and
 teardown.
 
 ```text
