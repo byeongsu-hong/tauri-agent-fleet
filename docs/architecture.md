@@ -23,7 +23,7 @@ entities.
 | --- | --- |
 | `SourceRevision` | Repository, worktree, commit, branch, and dirty state |
 | `BuildArtifact` | One reusable debug artifact keyed by revision and runtime |
-| `Instance` | Isolated HOME, runtime directory, display, ports, data, and process group |
+| `Instance` | Isolated HOME, runtime directory, platform display capability, ports, data, and process group |
 | `Run` | One suite assigned to one instance, including runner state and artifacts |
 
 ## Components
@@ -64,15 +64,15 @@ Each instance receives independent values for:
 - HOME
 - XDG_RUNTIME_DIR
 - application data
-- X display
-- VNC port
+- an X display and VNC port on Linux, or an explicit native display marker on macOS
 - application and daemon ports
 - tauri-agent endpoint registry
 - process group and PID metadata
 
 Readiness requires both a live process group and a successful plugin attach.
 VNC readiness is a separate human-observation capability, not proof that the app
-is driveable.
+is driveable. Native macOS instances do not synthesize an X display, VNC port,
+or VNC route; their dashboard capability is explicitly unavailable.
 
 ### Tauri agent client
 
@@ -201,13 +201,24 @@ metadata declares `tauri-agent-run/v1`; `status --json` declares
 Hooks may prepare product state but must not start Xvfb, VNC, the Fleet server,
 or the dashboard.
 
-Fleet terminates its recorded application, VNC, and X process groups before it
-runs `cleanupInstance`. The application hook owns any additional process group
-the product deliberately detached, and must identify it from private instance
-state rather than process-name matching. Cleanup runs for explicit stops, suite
-teardown, startup failure, and persisted crash repair. Observe-only dashboard
-refreshes never invoke it. Fleet caps cleanup at 30 seconds and 1 MiB of output.
-Failure marks the instance and active suite run as `infrastructure_failure`.
+On native macOS instances, `FLEET_DISPLAY` and `FLEET_VNC_PORT` are present as
+empty strings and `DISPLAY` is removed from the application and hook environment.
+Linux instances retain their isolated Xvfb display and loopback x11vnc values.
+
+Fleet terminates its recorded application and any platform display process
+groups before it runs `cleanupInstance`. The application hook owns any
+additional process group the product deliberately detached, and must identify
+it from private instance state rather than process-name matching. Cleanup runs
+for explicit stops, suite teardown, startup failure, and persisted crash repair.
+Observe-only dashboard refreshes never invoke it. Fleet caps cleanup at 30
+seconds and 1 MiB of output. Failure marks the instance and active suite run as
+`infrastructure_failure`.
+
+On macOS, process ownership uses the Darwin kernel's microsecond start time,
+process group, and executable path. If the recorded leader no longer has that
+exact identity, Fleet refuses a group-wide signal rather than risking a reused
+PID or process group; the application cleanup hook may then apply its own
+product-specific recovery contract.
 
 ## Suite contract
 

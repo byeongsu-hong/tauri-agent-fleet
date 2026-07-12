@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -14,7 +14,7 @@ import { buildArtifact } from '../src/build.ts'
 import { runCommand } from '../src/command.ts'
 import { artifactKey, CLEAN_FINGERPRINT, dirtyFingerprint, discoverRevision, resolveInsideWorktree } from '../src/revision.ts'
 import { parseAction, parseArtifactManifest, parseConfig, parseSuite } from '../src/schema.ts'
-import { processIdentity, processOwned, spawnOwned, terminateOwned } from '../src/process.ts'
+import { processIdentity, processOwned, spawnOwned, terminateOwned, type ProcessIdentity } from '../src/process.ts'
 import { createInstance, refreshInstance, stopInstance } from '../src/instance.ts'
 import { atomicJson, listInstances, loadConfig, loadSuite, privateDir, saveInstance, stateRoot } from '../src/storage.ts'
 import { startDashboard } from '../src/server.ts'
@@ -115,8 +115,9 @@ describe('trust-boundary schemas', () => {
     try {
       process.chdir(join(root, 'app', 'nested'))
       const loaded = await loadConfig()
-      expect(loaded.path).toBe(join(root, '.tauri-agent', 'fleet.json'))
-      expect(loaded.workspace).toBe(root)
+      const canonicalRoot = await realpath(root)
+      expect(loaded.path).toBe(join(canonicalRoot, '.tauri-agent', 'fleet.json'))
+      expect(loaded.workspace).toBe(canonicalRoot)
       expect(stateRoot(loaded.path)).toContain(join('tauri-agent-fleet', ''))
       expect((await loadSuite(loaded.workspace, 'save')).id).toBe('save')
       expect((await loadSuite(loaded.workspace, 'toon')).id).toBe('toon')
@@ -151,6 +152,7 @@ test('revision fingerprints include dirty and untracked content and runtime', as
   await runCommand(['git', 'init', '-q'], { cwd: repo })
   await runCommand(['git', 'config', 'user.email', 'fleet@example.test'], { cwd: repo })
   await runCommand(['git', 'config', 'user.name', 'Fleet Test'], { cwd: repo })
+  await runCommand(['git', 'config', 'commit.gpgsign', 'false'], { cwd: repo })
   await writeFile(join(repo, 'tracked'), 'one')
   await runCommand(['git', 'add', '.'], { cwd: repo })
   await runCommand(['git', 'commit', '-qm', 'initial'], { cwd: repo })
@@ -164,7 +166,7 @@ test('revision fingerprints include dirty and untracked content and runtime', as
   const executable = await dirtyFingerprint(repo)
   expect(new Set([clean, first, second, executable]).size).toBe(4)
   const revision = await discoverRevision(repo, 'HEAD', join(repo, '.state'))
-  expect((await discoverRevision(repo, '.', join(repo, '.state'))).worktree).toBe(repo)
+  expect((await discoverRevision(repo, '.', join(repo, '.state'))).worktree).toBe(await realpath(repo))
   expect(artifactKey(revision, 'wry')).not.toBe(artifactKey(revision, 'cef'))
   const foreign = await temporary()
   await runCommand(['git', 'init', '-q'], { cwd: foreign })
@@ -179,6 +181,7 @@ test('managed worktrees cannot silently drift from their requested revision', as
   await runCommand(['git', 'init', '-q'], { cwd: repo })
   await runCommand(['git', 'config', 'user.email', 'fleet@example.test'], { cwd: repo })
   await runCommand(['git', 'config', 'user.name', 'Fleet Test'], { cwd: repo })
+  await runCommand(['git', 'config', 'commit.gpgsign', 'false'], { cwd: repo })
   await writeFile(join(repo, 'tracked'), 'one')
   await runCommand(['git', 'add', '.'], { cwd: repo })
   await runCommand(['git', 'commit', '-qm', 'one'], { cwd: repo })
@@ -227,6 +230,7 @@ test('build cache runs a runtime build once and validates its manifest', async (
   await runCommand(['git', 'init', '-q'], { cwd: repo })
   await runCommand(['git', 'config', 'user.email', 'fleet@example.test'], { cwd: repo })
   await runCommand(['git', 'config', 'user.name', 'Fleet Test'], { cwd: repo })
+  await runCommand(['git', 'config', 'commit.gpgsign', 'false'], { cwd: repo })
   await writeFile(join(repo, 'seed'), 'seed')
   await runCommand(['git', 'add', '.'], { cwd: repo })
   await runCommand(['git', 'commit', '-qm', 'initial'], { cwd: repo })
@@ -267,6 +271,59 @@ test('exact teardown does not touch sibling groups or stale PID records', async 
   expect(await terminateOwned(one, 200)).toBe(true)
   expect(await processOwned(one)).toBe(false)
   expect(await processOwned(two)).toBe(true)
+})
+
+test('Darwin identity rejects same-second PID reuse before signaling', async () => {
+  const dir = await temporary()
+  const live = await spawnOwned('app', ['bash', '-c', 'exec sleep 30'], { log: join(dir, 'reuse.log') })
+  cleanups.push(async () => { await terminateOwned(live, 50) })
+  const recorded: ProcessRecord = {
+    ...live,
+    identitySource: 'darwin-libproc',
+    startTime: '1783867000.123456',
+    executable: '/bin/sleep'
+  }
+  const reused: ProcessIdentity = {
+    source: 'darwin-libproc',
+    pgid: recorded.pgid,
+    startTime: '1783867000.654321',
+    executable: recorded.executable!
+  }
+  expect(await terminateOwned(recorded, 10, async () => reused)).toBe(false)
+  expect(await processOwned(live)).toBe(true)
+})
+
+test('Darwin identity is revalidated before TERM escalation to KILL', async () => {
+  const dir = await temporary()
+  const stubborn = join(dir, 'stubborn')
+  const ready = join(dir, 'stubborn.ready')
+  await writeFile(stubborn, `#!/usr/bin/env bash
+set -eu
+trap '' TERM
+: > "$READY_FILE"
+while true; do sleep 1; done
+`)
+  await chmod(stubborn, 0o700)
+  const live = await spawnOwned('app', [stubborn], {
+    env: { ...process.env, READY_FILE: ready }, log: join(dir, 'term-kill-race.log')
+  })
+  await waitFor(() => Bun.file(ready).exists(), 1_000, 'TERM-ignoring process readiness')
+  cleanups.push(async () => { await terminateOwned(live, 20) })
+  const fakeExecutable = '/opt/tauri-agent-fleet/stubborn'
+  const recorded: ProcessRecord = {
+    ...live,
+    identitySource: 'darwin-libproc',
+    startTime: '1783867000.123456',
+    executable: fakeExecutable
+  }
+  const identities: ProcessIdentity[] = [
+    { source: 'darwin-libproc', pgid: recorded.pgid, startTime: recorded.startTime, executable: fakeExecutable },
+    { source: 'darwin-libproc', pgid: recorded.pgid, startTime: '1783867000.654321', executable: fakeExecutable }
+  ]
+  let inspections = 0
+  expect(await terminateOwned(recorded, 20, async () => identities[inspections++]!)).toBe(false)
+  expect(inspections).toBe(2)
+  expect(await processOwned(live)).toBe(true)
 })
 
 test('instance cleanup hook reaps an exact app-owned process group', async () => {
@@ -325,10 +382,10 @@ test('cleanup hook failure persists infrastructure evidence', async () => {
   })
 })
 
-test('teardown kills descendants after the process-group leader exits', async () => {
+test('Darwin teardown refuses KILL after the process-group leader exits', async () => {
   const dir = await temporary()
   const childFile = join(dir, 'child.pid')
-  const record = await spawnOwned('app', ['bash', '-c', `trap 'exit 0' TERM; (trap '' TERM; echo "$BASHPID" > "$CHILD_PID_FILE"; exec sleep 30) & wait`], {
+  const record = await spawnOwned('app', ['bash', '-c', `trap 'exit 0' TERM; (trap '' TERM; sh -c 'echo "$$" > "$CHILD_PID_FILE"; exec sleep 30') & wait`], {
     env: { ...process.env, CHILD_PID_FILE: childFile },
     log: join(dir, 'group.log')
   })
@@ -338,14 +395,24 @@ test('teardown kills descendants after the process-group leader exits', async ()
     try { childPid = Number(await readFile(childFile, 'utf8')); return childPid > 0 } catch { return false }
   }, 1_000, 'child PID')
   expect(record.pgid).toBe(record.pid)
-  expect(await terminateOwned(record, 50)).toBe(true)
-  expect(await processIdentity(childPid)).toBeUndefined()
+  const fakeExecutable = '/opt/tauri-agent-fleet/group-leader'
+  const darwinRecord: ProcessRecord = {
+    ...record, identitySource: 'darwin-libproc', startTime: '1783867000.123456', executable: fakeExecutable
+  }
+  const identities: Array<ProcessIdentity | undefined> = [
+    { source: 'darwin-libproc', pgid: darwinRecord.pgid, startTime: darwinRecord.startTime, executable: fakeExecutable },
+    undefined
+  ]
+  let inspections = 0
+  expect(await terminateOwned(darwinRecord, 50, async () => identities[inspections++])).toBe(false)
+  expect(inspections).toBe(2)
+  expect(await processIdentity(childPid)).toBeDefined()
 })
 
-test('teardown terminates an orphaned owned process group', async () => {
+test('Linux teardown terminates an orphaned owned process group', async () => {
   const dir = await temporary()
   const childFile = join(dir, 'orphan.pid')
-  const record = await spawnOwned('app', ['bash', '-c', `(trap '' TERM; echo "$BASHPID" > "$CHILD_PID_FILE"; exec sleep 30) & sleep .2`], {
+  const record = await spawnOwned('app', ['bash', '-c', `(trap '' TERM; sh -c 'echo "$$" > "$CHILD_PID_FILE"; exec sleep 30') & sleep .2`], {
     env: { ...process.env, CHILD_PID_FILE: childFile }, log: join(dir, 'orphan.log')
   })
   cleanups.push(() => { try { process.kill(-record.pgid, 'SIGKILL') } catch { /* already gone */ } })
@@ -353,7 +420,8 @@ test('teardown terminates an orphaned owned process group', async () => {
   await waitFor(async () => {
     try { childPid = Number(await readFile(childFile, 'utf8')); return childPid > 0 && !await processIdentity(record.pid) } catch { return false }
   }, 1_000, 'orphaned process group')
-  expect(await terminateOwned(record, 50)).toBe(true)
+  const linuxRecord: ProcessRecord = { ...record, identitySource: 'linux-proc' }
+  expect(await terminateOwned(linuxRecord, 50, async () => undefined)).toBe(true)
   expect(await processIdentity(childPid)).toBeUndefined()
 })
 
@@ -387,10 +455,73 @@ test('startup failures persist infrastructure evidence without a live process', 
   })
   const revision = { repository: 'test', worktree, commit: 'a'.repeat(40), dirtyFingerprint: CLEAN_FINGERPRINT }
   const artifact = { key: 'b'.repeat(64), dir: artifactDir, manifest: { protocol: 'tauri-agent-artifact/v1' as const, executable: 'app' } }
-  await expect(createInstance(CONFIG, root, revision, 'wry', artifact)).rejects.toThrow('ENOENT')
+  await expect(createInstance(CONFIG, root, revision, 'wry', artifact, undefined, 'linux')).rejects.toThrow('ENOENT')
   const [failed] = await listInstances(root)
   expect(failed).toMatchObject({ state: 'failed', processes: [], failure: { class: 'infrastructure_failure' } })
   expect(failed?.failure?.message).toContain('missing-xvfb')
+})
+
+test('Darwin launches and cleans a native app without display helpers or fake VNC', async () => {
+  const dir = await temporary()
+  const root = join(dir, 'state')
+  const worktree = join(dir, 'worktree')
+  const artifactDir = join(dir, 'artifact')
+  const assets = join(dir, 'assets')
+  await Promise.all([mkdir(worktree), mkdir(artifactDir), mkdir(assets)])
+  await writeFile(join(assets, 'index.html'), 'fleet dashboard')
+  const app = join(artifactDir, 'app')
+  await writeFile(app, `#!/usr/bin/env bun
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+const dir = join(process.env.XDG_RUNTIME_DIR, 'tauri-agent', 'com.example.app')
+mkdirSync(dir, { recursive: true, mode: 0o700 })
+const path = join(dir, process.pid + '.sock')
+const server = Bun.listen({ unix: path, socket: { data(socket, data) {
+  for (const line of data.toString().trim().split('\\n')) { const request = JSON.parse(line); socket.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { attached: true, windows: [{ label: 'main' }], capabilities: { display: process.env.DISPLAY ?? null, fleetDisplay: process.env.FLEET_DISPLAY, vncPort: process.env.FLEET_VNC_PORT } } }) + '\\n') }
+} } })
+writeFileSync(join(dir, 'endpoint.json'), JSON.stringify({ appId: 'com.example.app', pid: process.pid, transport: 'unix', path, token: 'private-agent-token' }), { mode: 0o600 })
+process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
+`)
+  await chmod(app, 0o700)
+  const missingXvfb = join(dir, 'must-not-run-xvfb')
+  const missingVnc = join(dir, 'must-not-run-vnc')
+  const oldXvfb = process.env.FLEET_XVFB_COMMAND
+  const oldVnc = process.env.FLEET_VNC_COMMAND
+  process.env.FLEET_XVFB_COMMAND = missingXvfb
+  process.env.FLEET_VNC_COMMAND = missingVnc
+  cleanups.push(() => {
+    if (oldXvfb === undefined) delete process.env.FLEET_XVFB_COMMAND
+    else process.env.FLEET_XVFB_COMMAND = oldXvfb
+    if (oldVnc === undefined) delete process.env.FLEET_VNC_COMMAND
+    else process.env.FLEET_VNC_COMMAND = oldVnc
+  })
+  const config: FleetConfig = {
+    ...CONFIG,
+    lifecycle: { cleanupInstance: ['bash', '-c', `printf '%s|%s|%s' "$FLEET_DISPLAY" "$FLEET_VNC_PORT" "\${DISPLAY-unset}" > "$FLEET_HOME/cleanup-env"`] }
+  }
+  const revision = { repository: 'test', worktree, commit: 'a'.repeat(40), dirtyFingerprint: CLEAN_FINGERPRINT }
+  const artifact = {
+    key: 'b'.repeat(64), dir: artifactDir,
+    manifest: { protocol: 'tauri-agent-artifact/v1' as const, executable: 'app', env: { DISPLAY: ':forged', FLEET_DISPLAY: ':forged', FLEET_VNC_PORT: '5900' } }
+  }
+  const instance = await createInstance(config, root, revision, 'wry', artifact, 'native', 'darwin')
+  cleanups.push(async () => { if (await processOwned(instance.processes[0]!)) await stopInstance(config, root, instance) })
+  expect(instance).toMatchObject({ state: 'ready', display: 'native', vncPort: 0, vncToken: '' })
+  expect(instance.processes.map((item) => item.name)).toEqual(['app'])
+  expect(await processOwned(instance.processes[0]!)).toBe(true)
+  expect((instance.endpoint?.capabilities as { capabilities: Record<string, unknown> }).capabilities).toEqual({
+    display: null, fleetDisplay: '', vncPort: ''
+  })
+  expect((await refreshInstance(config, root, instance)).state).toBe('ready')
+  const dashboard = startDashboard({ root, assets, config, port: 0 })
+  try {
+    const state = await fetch(new URL('/api/v1/fleet', dashboard.url)).then((response) => response.json()) as { instances: Array<{ display: string; vnc: Record<string, unknown> }> }
+    expect(state.instances[0]).toMatchObject({ display: 'native', vnc: { available: false } })
+    expect(state.instances[0]?.vnc).not.toHaveProperty('websocket')
+  } finally { dashboard.stop(true) }
+  await stopInstance(config, root, instance)
+  expect(await processOwned(instance.processes[0]!)).toBe(false)
+  expect(await readFile(join(instance.directories.home, 'cleanup-env'), 'utf8')).toBe('||unset')
 })
 
 test('parallel same-artifact instances isolate slots, state, endpoints, and teardown', async () => {
@@ -455,8 +586,8 @@ process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
   const revision = { repository: 'test', worktree: worktreeOne, commit: 'd'.repeat(40), dirtyFingerprint: 'e'.repeat(64) }
   const artifact = { key: 'f'.repeat(64), dir: artifactDir, manifest: { protocol: 'tauri-agent-artifact/v1' as const, executable: 'app', env: { HOME: '/escape', XDG_STATE_HOME: '/escape', DISPLAY: ':1', CUSTOM: 'yes' } } }
   const [one, two] = await Promise.all([
-    createInstance(CONFIG, root, revision, 'wry', artifact, 'one'),
-    createInstance(CONFIG, root, revision, 'wry', artifact, 'two')
+    createInstance(CONFIG, root, revision, 'wry', artifact, 'one', 'linux'),
+    createInstance(CONFIG, root, revision, 'wry', artifact, 'two', 'linux')
   ])
   cleanups.push(async () => { await stopInstance(CONFIG, root, one); await stopInstance(CONFIG, root, two) })
   expect(one.artifactKey).toBe(two.artifactKey)
@@ -491,7 +622,7 @@ process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
   await Bun.sleep(2)
   expect((await refreshInstance(CONFIG, root, recovered)).updatedAt).toBe(stableUpdatedAt)
   const cefArtifact = { ...artifact, key: '9'.repeat(64) }
-  const cef = await createInstance(CONFIG, root, { ...revision, worktree: worktreeTwo, commit: '8'.repeat(40) }, 'cef', cefArtifact, 'cef')
+  const cef = await createInstance(CONFIG, root, { ...revision, worktree: worktreeTwo, commit: '8'.repeat(40) }, 'cef', cefArtifact, 'cef', 'linux')
   cleanups.push(async () => { await stopInstance(CONFIG, root, cef) })
   expect(cef.state).toBe('ready')
   expect(cef.variant).toBe('cef')

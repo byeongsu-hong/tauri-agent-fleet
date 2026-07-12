@@ -53,7 +53,7 @@ AI providers.
 
 ## Initial scope
 
-- Linux/X11 headless execution with Xvfb and x11vnc
+- Linux/X11 headless execution with Xvfb and x11vnc, plus native macOS launches
 - Git worktree/revision discovery
 - Wry and CEF runtimes
 - Build-once, run-many isolated application instances
@@ -63,8 +63,10 @@ AI providers.
 
 ## Install and verify
 
-Fleet requires Bun, Git, Xvfb, and x11vnc. The application must include a
-compatible `tauri-agent-plugin` inline endpoint.
+Fleet requires Bun and Git. Linux headless runs additionally require Xvfb and
+x11vnc. macOS launches the native application without an X display or VNC, so
+the dashboard honestly reports the live-view capability as unavailable. The
+application must include a compatible `tauri-agent-plugin` inline endpoint.
 
 ```bash
 bun install
