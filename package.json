@@ -20,6 +20,7 @@
     "build": "bun build src/cli.ts --target=bun --external '@byeongsu-hong/tauri-agent-plugin/*' --outdir=dist && vite build",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "test:e2e:runtimes": "bun run src/cli.ts test smoke smoke smoke --runtime wry --jobs 3 --config test/fixtures/dual-runtime-app/.tauri-agent/fleet.json && bun run src/cli.ts test smoke smoke smoke --runtime cef --jobs 3 --config test/fixtures/dual-runtime-app/.tauri-agent/fleet.json",
     "check": "bun run typecheck && bun test && bun run build",
     "prepare": "bun run build",
     "prepack": "bun run check"

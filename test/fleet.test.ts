@@ -40,6 +40,7 @@ test('TOON instructions round-trip the JSON data model and typed actions', () =>
   expect(JSON.parse(instructionToJson(jsonToInstruction(JSON.stringify(value))))).toEqual(value)
   const action = { type: 'fill', role: 'textbox', name: 'Document name', value: 'notes.md' } as const
   expect(parseActionText(formatActionText(action))).toEqual(action)
+  expect(parseActionText(JSON.stringify(action))).toEqual(action)
 })
 
 const CONFIG: FleetConfig = {

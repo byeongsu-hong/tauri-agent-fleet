@@ -27,7 +27,11 @@ role: button
 name: Save`
 
 export function parseActionText(text: string): RunnerAction {
-  return parseAction(decodeInstruction(text))
+  let value: unknown
+  try { value = decodeInstruction(text) } catch (error) {
+    try { value = JSON.parse(text) } catch { throw error }
+  }
+  return parseAction(value)
 }
 
 export const formatActionText = (action: RunnerAction): string => encodeInstruction(action)

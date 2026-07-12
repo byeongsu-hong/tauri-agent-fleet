@@ -1,0 +1,12 @@
+{
+  "protocol": "tauri-agent-fleet/v1",
+  "application": {
+    "id": "dev.byeongsu.tauri-agent-fleet.runtime-fixture",
+    "root": "test/fixtures/dual-runtime-app"
+  },
+  "runtimes": {
+    "default": "wry",
+    "wry": { "build": ["bash", "build.sh"] },
+    "cef": { "build": ["bash", "build.sh"] }
+  }
+}
