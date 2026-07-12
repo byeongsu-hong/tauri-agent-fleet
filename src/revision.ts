@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { access, lstat, readFile, readlink, realpath, stat } from 'node:fs/promises'
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { output, runCommand } from './command.ts'
-import { privateDir } from './storage.ts'
+import { privateDir, withLock } from './storage.ts'
 import type { Revision, RuntimeVariant } from './types.ts'
 
 export const CLEAN_FINGERPRINT = createHash('sha256').digest('hex')
@@ -52,7 +52,12 @@ function parseWorktrees(raw: string): Array<{ path: string; branch?: string; com
   })
 }
 
-export async function discoverRevision(repository: string, selector: string | undefined, stateRoot: string): Promise<Revision> {
+export async function discoverRevision(
+  repository: string,
+  selector: string | undefined,
+  stateRoot: string,
+  options: { isolated?: boolean } = {}
+): Promise<Revision> {
   const repo = await realpath(resolve(repository))
   const common = await realpath(await output(['git', 'rev-parse', '--show-toplevel'], repo))
   const worktrees = parseWorktrees(await output(['git', 'worktree', 'list', '--porcelain'], common))
@@ -67,7 +72,7 @@ export async function discoverRevision(repository: string, selector: string | un
     branch = match.branch
   } else if (selector && selector !== 'HEAD') {
     const wanted = await output(['git', 'rev-parse', selector], common)
-    const match = worktrees.find((item) => item.branch === selector || item.commit === wanted)
+    const match = options.isolated ? undefined : worktrees.find((item) => item.branch === selector || item.commit === wanted)
     if (match) {
       worktree = match.path
       branch = match.branch
@@ -75,10 +80,12 @@ export async function discoverRevision(repository: string, selector: string | un
       const repoKey = createHash('sha256').update(common).digest('hex').slice(0, 8)
       const managed = join(stateRoot, 'worktrees', `${basename(common)}-${repoKey}-${wanted.slice(0, 12)}`)
       await privateDir(join(stateRoot, 'worktrees'))
-      if (await exists(managed)) {
-        const existing = worktrees.find((item) => item.path === managed)
-        if (!existing || existing.commit !== wanted) throw new Error(`managed worktree does not match requested revision: ${managed}`)
-      } else await runCommand(['git', 'worktree', 'add', '--detach', managed, wanted], { cwd: common })
+      await withLock(`${managed}.lock`, async () => {
+        if (await exists(managed)) {
+          const existing = await output(['git', 'rev-parse', 'HEAD'], managed)
+          if (existing !== wanted) throw new Error(`managed worktree does not match requested revision: ${managed}`)
+        } else await runCommand(['git', 'worktree', 'add', '--detach', managed, wanted], { cwd: common })
+      })
       worktree = managed
     }
   }

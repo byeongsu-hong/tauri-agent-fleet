@@ -33,7 +33,7 @@ function safeId(value: string): boolean { return /^[A-Za-z0-9][A-Za-z0-9._-]{0,6
 
 export async function resolveWorkerRevision(repository: string, root: string, job: PublicCoordinatorJob): Promise<Revision> {
   if (!job.commit.match(/^[a-f0-9]{40}$/)) throw new Error('coordinator job commit is invalid')
-  const revision = await discoverRevision(repository, job.commit, root)
+  const revision = await discoverRevision(repository, job.commit, root, { isolated: true })
   if (revision.repository !== job.repository) throw new Error('job repository does not match worker repository')
   if (revision.commit !== job.commit) throw new Error('worker resolved a different commit')
   return requireCleanRevision(revision)
@@ -93,7 +93,8 @@ async function executeClaim(options: WorkerOptions, claim: { job: PublicCoordina
   try {
     await beat()
     heartbeat = setInterval(() => { void beat() }, options.heartbeatMs ?? 10_000)
-    const revision = await (options.resolveRevision ?? resolveWorkerRevision)(options.repository, options.root, job)
+    const revisionRoot = join(options.root, 'jobs', job.id)
+    const revision = await (options.resolveRevision ?? resolveWorkerRevision)(options.repository, revisionRoot, job)
     const instance = await (options.execute ?? defaultExecute)(options.config, options.root, revision, job)
     if (stopped) return
     await uploadEvidence(options.client, job, options.id, leaseToken, instance)
