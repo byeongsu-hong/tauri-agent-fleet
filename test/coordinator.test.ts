@@ -17,7 +17,8 @@ test('coordinator claims atomically and enforces global capacity', async () => {
   const root = await temporary()
   try {
     const store = new CoordinatorStore(root, { maxActive: 2, leaseMs: 1_000 })
-    await Promise.all([store.enqueue(input, 0), store.enqueue(input, 1), store.enqueue(input, 2)])
+    const queued = await Promise.all([store.enqueue(input, 0), store.enqueue(input, 1), store.enqueue(input, 2)])
+    expect(queued.every((job) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(job.id))).toBe(true)
     const claims = await Promise.all([store.claim('worker-a', 10), store.claim('worker-b', 10)])
     expect(claims.every(Boolean)).toBe(true)
     expect(new Set(claims.map((claim) => claim!.job.id)).size).toBe(2)

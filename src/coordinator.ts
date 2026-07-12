@@ -141,7 +141,7 @@ export class CoordinatorStore {
       const timestamp = new Date(now).toISOString()
       const job: CoordinatorJob = {
         protocol: COORDINATOR_PROTOCOL,
-        id: randomBytes(16).toString('base64url'),
+        id: randomBytes(16).toString('hex'),
         ...input,
         state: 'queued',
         attempt: 0,
