@@ -108,9 +108,18 @@ Do not append:
 Persist those details as artifacts. A failure-analysis model may retrieve a
 bounded section later.
 
-The provider regression fixture currently measures 160 bytes of runner input
-and 1,008 bytes for the complete Responses API request, including its strict
-action schema.
+Binary providers send the same lean runner context as compact `FLEET/1` text
+rather than JSON. The July 2026 identical one-action CEF smoke measured:
+
+| Provider | Before | After | Prompt change | Total change |
+| --- | ---: | ---: | ---: | ---: |
+| Codex | Luna: 8,813 in / 51 out | Spark low: 1,922 in / 320 out | -78.2% | -74.7% |
+| Claude | default: 1,922 in / 271 out | Haiku low: 2,025 in / 573 out | +5.4% | +18.5% |
+
+Claude's provider-reported cost fell from $0.0124305 to $0.00489 (-60.7%)
+despite the token-count increase, so Haiku remains the cost default for this
+simple action-selection workload. Suite token budgets include all reported
+prompt, cached, helper-model, and output usage.
 
 ## Acceptance targets
 

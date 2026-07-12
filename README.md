@@ -148,10 +148,34 @@ Save each suite as `.tauri-agent/suites/<id>.json` and invoke it by ID.
 }
 ```
 
-The initial provider uses the OpenAI Responses API through standard `fetch`.
-Set `OPENAI_API_KEY` and optionally `OPENAI_MODEL`, `OPENAI_BASE_URL`,
-`OPENAI_INPUT_COST_PER_MILLION`, and `OPENAI_OUTPUT_COST_PER_MILLION`. Provider
-usage is persisted per turn and accumulated on the dashboard.
+Runner models use authenticated local binaries rather than API keys. The
+default provider pins `gpt-5.3-codex-spark` with low reasoning; Claude pins
+`haiku` with low effort. Both receive the same compact Fleet input and run
+without model tools. Codex replaces its built-in instructions with a private
+temporary Fleet prompt. Provider-reported prompt overhead counts toward suite
+token budgets.
+
+Runner turns use a compact, human-readable `FLEET/1` text format instead of
+JSON. Model actions remain strict schema-constrained JSON so Fleet can validate
+them deterministically.
+
+```bash
+# ChatGPT login: Codex Spark, low
+tauri-agent-fleet test editor-save
+
+# Codex model override
+CODEX_MODEL=gpt-5.6-luna CODEX_REASONING_EFFORT=medium tauri-agent-fleet test editor-save
+
+# Claude login: Haiku, low
+FLEET_MODEL_PROVIDER=claude tauri-agent-fleet test editor-save
+
+# Claude model override
+FLEET_MODEL_PROVIDER=claude CLAUDE_MODEL=sonnet tauri-agent-fleet test editor-save
+```
+
+Use `CODEX_REASONING_EFFORT` or `CLAUDE_EFFORT` to override effort. The optional
+`CODEX_COMMAND` and `CLAUDE_COMMAND` variables select a non-default binary path.
+Run `codex login status` or `claude auth status` to verify subscription auth.
 
 ```bash
 tauri-agent-fleet up HEAD
@@ -179,7 +203,6 @@ the console protocol.
 - Native Appium-style controls
 - Reimplementing Chrome DevTools Protocol
 - Unbounded parallel execution
-- A provider abstraction before a second provider is actually needed
 
 ## License
 

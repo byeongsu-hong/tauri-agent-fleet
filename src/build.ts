@@ -73,6 +73,8 @@ export async function buildArtifact(
         FLEET_ARTIFACT_MANIFEST: join(staging, 'manifest.json')
       }
       delete env.OPENAI_API_KEY
+      delete env.ANTHROPIC_API_KEY
+      delete env.CLAUDE_CODE_OAUTH_TOKEN
       if (config.lifecycle?.prepareBuild) await runCommand(config.lifecycle.prepareBuild, { cwd: project, env })
       await runCommand(definition.build, { cwd: project, env })
       const manifest = await validArtifact(staging, containerRoot)

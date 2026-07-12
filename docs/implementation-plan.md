@@ -182,8 +182,10 @@ Gate:
 
 ### Provider
 
-Implement one provider path first, using standard `fetch` and structured output.
-Do not create a provider framework until a second provider is required.
+Use authenticated Codex and Claude binaries with compact `FLEET/1` input,
+strict schema-constrained JSON output, and no model tools. Replace Codex's
+built-in instructions and keep selection to one environment switch; do not add
+an SDK/provider framework or a general-purpose input parser.
 
 ### Loop
 

@@ -25,14 +25,17 @@ async function byDeadline<T>(value: Promise<T>, deadline: number): Promise<T> {
   } finally { if (timer) clearTimeout(timer) }
 }
 
-async function conditionMet(client: DebuggerClient, condition: SuccessCondition): Promise<boolean> {
+export async function conditionMet(client: DebuggerClient, condition: SuccessCondition): Promise<boolean> {
   if ('state' in condition) {
     const value = await client.call('state', { key: condition.state.key })
     return isDeepStrictEqual(value, condition.state.equals)
   }
   if ('ipc' in condition) throw new Error('IPC conditions are evaluated together')
   try { await client.call('expect', { ...condition.expect }); return true } catch (error) {
-    if (error instanceof Error && error.message.startsWith('AGENT_ERROR:')) return false
+    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
+    const message = error instanceof Error ? error.message : ''
+    if (code === 'AGENT_ERROR' || message.startsWith('AGENT_ERROR:')) return false
+    if ((code === 'BRIDGE_UNAVAILABLE' || message.startsWith('BRIDGE_UNAVAILABLE:')) && message.includes('expect:')) return false
     throw error
   }
 }

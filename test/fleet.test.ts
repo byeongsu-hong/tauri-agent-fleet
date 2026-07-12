@@ -18,10 +18,10 @@ import { processIdentity, processOwned, spawnOwned, terminateOwned } from '../sr
 import { createInstance, refreshInstance, stopInstance } from '../src/instance.ts'
 import { atomicJson, listInstances, loadConfig, loadSuite, privateDir, saveInstance, stateRoot } from '../src/storage.ts'
 import { startDashboard } from '../src/server.ts'
-import { runSuite, type NextAction } from '../src/runner.ts'
+import { conditionMet, runSuite, type NextAction } from '../src/runner.ts'
 import { defaultVariant, runSuites } from '../src/scheduler.ts'
 import { freePort, portOpen, waitFor } from '../src/network.ts'
-import { openAIAction } from '../src/provider.ts'
+import { modelAction } from '../src/provider.ts'
 import type { FleetConfig, InstanceRecord, ProcessRecord, Suite } from '../src/types.ts'
 
 const cleanups: Array<() => void | Promise<void>> = []
@@ -197,10 +197,18 @@ test('build cache runs a runtime build once and validates its manifest', async (
   const repo = await temporary()
   const state = join(repo, '.fleet')
   const previousProviderKey = process.env.OPENAI_API_KEY
+  const previousAnthropicKey = process.env.ANTHROPIC_API_KEY
+  const previousClaudeToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
   process.env.OPENAI_API_KEY = 'runner-secret'
+  process.env.ANTHROPIC_API_KEY = 'anthropic-secret'
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = 'claude-secret'
   cleanups.push(() => {
     if (previousProviderKey === undefined) delete process.env.OPENAI_API_KEY
     else process.env.OPENAI_API_KEY = previousProviderKey
+    if (previousAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY
+    else process.env.ANTHROPIC_API_KEY = previousAnthropicKey
+    if (previousClaudeToken === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+    else process.env.CLAUDE_CODE_OAUTH_TOKEN = previousClaudeToken
   })
   await runCommand(['git', 'init', '-q'], { cwd: repo })
   await runCommand(['git', 'config', 'user.email', 'fleet@example.test'], { cwd: repo })
@@ -211,7 +219,7 @@ test('build cache runs a runtime build once and validates its manifest', async (
   const revision = await discoverRevision(repo, 'HEAD', state)
   const config: FleetConfig = {
     ...CONFIG,
-    runtimes: { default: 'wry', wry: { build: ['bash', '-c', `test -z "\${OPENAI_API_KEY:-}"; n=$(cat count 2>/dev/null || echo 0); echo $((n+1)) > count; mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf '#!/usr/bin/env bash\\nexec sleep 30\\n' > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; printf '{"protocol":"tauri-agent-artifact/v1","executable":"bin/app"}\\n' > "$FLEET_ARTIFACT_MANIFEST"`] } }
+    runtimes: { default: 'wry', wry: { build: ['bash', '-c', `test -z "\${OPENAI_API_KEY:-}\${ANTHROPIC_API_KEY:-}\${CLAUDE_CODE_OAUTH_TOKEN:-}"; n=$(cat count 2>/dev/null || echo 0); echo $((n+1)) > count; mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf '#!/usr/bin/env bash\\nexec sleep 30\\n' > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; printf '{"protocol":"tauri-agent-artifact/v1","executable":"bin/app"}\\n' > "$FLEET_ARTIFACT_MANIFEST"`] } }
   }
   const first = await buildArtifact(config, state, revision, 'wry')
   const second = await buildArtifact(config, state, revision, 'wry')
@@ -399,7 +407,7 @@ mkdirSync(dir, { recursive: true, mode: 0o700 })
 const path = join(dir, process.pid + '.sock')
 let attaches = 0
 const server = Bun.listen({ unix: path, socket: { data(socket, data) {
-  for (const line of data.toString().trim().split('\\n')) { const request = JSON.parse(line); attaches += 1; socket.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { attached: true, windows: attaches > 1 ? [{ label: 'main' }] : [], capabilities: { runtime: process.env.FLEET_RUNTIME, home: process.env.HOME, state: process.env.XDG_STATE_HOME, display: process.env.DISPLAY, custom: process.env.CUSTOM, providerKey: process.env.OPENAI_API_KEY ?? null, fleetState: process.env.FLEET_STATE_DIR ?? null } } }) + '\\n') }
+  for (const line of data.toString().trim().split('\\n')) { const request = JSON.parse(line); attaches += 1; socket.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { attached: true, windows: attaches > 1 ? [{ label: 'main' }] : [], capabilities: { runtime: process.env.FLEET_RUNTIME, home: process.env.HOME, state: process.env.XDG_STATE_HOME, display: process.env.DISPLAY, custom: process.env.CUSTOM, providerKey: process.env.OPENAI_API_KEY ?? null, anthropicKey: process.env.ANTHROPIC_API_KEY ?? null, claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null, fleetState: process.env.FLEET_STATE_DIR ?? null } } }) + '\\n') }
 } } })
 writeFileSync(join(dir, 'endpoint.json'), JSON.stringify({ appId: 'com.example.app', pid: process.pid, transport: 'unix', path, token: 'private-agent-token' }), { mode: 0o600 })
 process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
@@ -408,9 +416,13 @@ process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
   const oldXvfb = process.env.FLEET_XVFB_COMMAND
   const oldVnc = process.env.FLEET_VNC_COMMAND
   const oldProviderKey = process.env.OPENAI_API_KEY
+  const oldAnthropicKey = process.env.ANTHROPIC_API_KEY
+  const oldClaudeToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
   process.env.FLEET_XVFB_COMMAND = xvfb
   process.env.FLEET_VNC_COMMAND = vnc
   process.env.OPENAI_API_KEY = 'runner-secret'
+  process.env.ANTHROPIC_API_KEY = 'anthropic-secret'
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = 'claude-secret'
   cleanups.push(() => {
     if (oldXvfb === undefined) delete process.env.FLEET_XVFB_COMMAND
     else process.env.FLEET_XVFB_COMMAND = oldXvfb
@@ -418,6 +430,10 @@ process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
     else process.env.FLEET_VNC_COMMAND = oldVnc
     if (oldProviderKey === undefined) delete process.env.OPENAI_API_KEY
     else process.env.OPENAI_API_KEY = oldProviderKey
+    if (oldAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY
+    else process.env.ANTHROPIC_API_KEY = oldAnthropicKey
+    if (oldClaudeToken === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+    else process.env.CLAUDE_CODE_OAUTH_TOKEN = oldClaudeToken
   })
   const worktreeOne = join(dir, 'worktree-one')
   const worktreeTwo = join(dir, 'worktree-two')
@@ -448,8 +464,8 @@ process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
   if (oneDescriptor.transport !== 'unix' || twoDescriptor.transport !== 'unix') throw new Error('expected Unix endpoints')
   expect(oneDescriptor.path).not.toBe(twoDescriptor.path)
   expect(await readFile(join(one.directories.root, 'instance.json'), 'utf8')).not.toContain('private-agent-token')
-  expect((one.endpoint?.capabilities as { capabilities: { home: string; state: string; display: string; custom: string; runtime: string; providerKey: string | null; fleetState: string | null } }).capabilities).toEqual({
-    home: one.directories.home, state: join(one.directories.home, '.local', 'state'), display: one.display, custom: 'yes', runtime: 'wry', providerKey: null, fleetState: null
+  expect((one.endpoint?.capabilities as { capabilities: { home: string; state: string; display: string; custom: string; runtime: string; providerKey: string | null; anthropicKey: string | null; claudeToken: string | null; fleetState: string | null } }).capabilities).toEqual({
+    home: one.directories.home, state: join(one.directories.home, '.local', 'state'), display: one.display, custom: 'yes', runtime: 'wry', providerKey: null, anthropicKey: null, claudeToken: null, fleetState: null
   })
   two.state = 'booting'
   delete two.endpoint
@@ -588,47 +604,101 @@ process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
   expect(echoed).toEqual([0, 1, 2, 255])
 })
 
-test('provider sends lean structured context and records reported usage and cost', async () => {
-  let requestBody: Record<string, unknown> | undefined
-  let requestBytes = 0
-  const api = Bun.serve({
-    port: 0,
-    async fetch(request) {
-      const body = await request.text()
-      requestBytes = Buffer.byteLength(body)
-      requestBody = JSON.parse(body) as Record<string, unknown>
-      return Response.json({
-        output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({
-          type: 'click', scope: null, role: 'button', name: 'Save', text: null, value: null, x: null, y: null, milliseconds: null
-        }) }] }],
-        usage: { input_tokens: 100, output_tokens: 20 }
-      })
-    }
-  })
-  cleanups.push(() => api.stop(true))
+test('Codex provider replaces built-in instructions and pins Spark low without model tools', async () => {
+  const dir = await temporary()
+  const command = join(dir, 'codex')
+  const capture = join(dir, 'capture.json')
+  await writeFile(command, `#!/usr/bin/env bun
+const input = await Bun.stdin.text()
+const args = Bun.argv.slice(2)
+const config = args.find((arg) => arg.startsWith('model_instructions_file='))
+const instructions = config ? await Bun.file(JSON.parse(config.slice(config.indexOf('=') + 1))).text() : null
+const schemaIndex = args.indexOf('--output-schema')
+const schema = schemaIndex < 0 ? null : JSON.parse(await Bun.file(args[schemaIndex + 1]).text())
+await Bun.write(process.env.CODEX_CAPTURE, JSON.stringify({ args, input, instructions, schema, apiKey: process.env.OPENAI_API_KEY ?? null, anthropicKey: process.env.ANTHROPIC_API_KEY ?? null, claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null }))
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '{"type":"wait","scope":null,"role":null,"name":null,"text":null,"value":null,"x":null,"y":null,"milliseconds":1}' } }))
+console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 9000, output_tokens: 100 } }))
+`)
+  await chmod(command, 0o700)
   const previous = { ...process.env }
-  process.env.OPENAI_API_KEY = 'test-key'
-  process.env.OPENAI_BASE_URL = String(api.url).replace(/\/$/, '')
-  process.env.OPENAI_MODEL = 'gpt-4o-mini'
-  process.env.OPENAI_INPUT_COST_PER_MILLION = '1'
-  process.env.OPENAI_OUTPUT_COST_PER_MILLION = '2'
+  process.env.FLEET_MODEL_PROVIDER = 'codex'
+  process.env.CODEX_COMMAND = command
+  process.env.CODEX_CAPTURE = capture
+  process.env.OPENAI_API_KEY = 'must-not-reach-codex'
+  process.env.ANTHROPIC_API_KEY = 'must-not-reach-codex'
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = 'must-not-reach-codex'
+  delete process.env.CODEX_MODEL
+  delete process.env.CODEX_REASONING_EFFORT
   cleanups.push(() => {
-    for (const key of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'OPENAI_INPUT_COST_PER_MILLION', 'OPENAI_OUTPUT_COST_PER_MILLION']) {
+    for (const key of ['FLEET_MODEL_PROVIDER', 'CODEX_COMMAND', 'CODEX_CAPTURE', 'CODEX_MODEL', 'CODEX_REASONING_EFFORT', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) {
       if (previous[key] === undefined) delete process.env[key]
       else process.env[key] = previous[key]
     }
   })
-  const decision = await openAIAction({ objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], observation: { snapshot: 'button Save' }, remaining: { steps: 2, seconds: 5, tokens: 1000 } })
-  expect(decision.action).toEqual({ type: 'click', role: 'button', name: 'Save' })
-  expect(decision.usage).toEqual({ inputTokens: 100, outputTokens: 20, cost: 0.00014 })
-  expect(requestBody?.store).toBe(false)
-  expect(requestBody?.max_output_tokens).toBe(100)
-  expect((requestBody?.text as { format: { type: string } }).format.type).toBe('json_schema')
-  expect(JSON.parse(requestBody?.input as string)).toEqual({ objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], observation: { snapshot: 'button Save' }, remaining: { steps: 2, seconds: 5, tokens: 1000 } })
-  expect(Buffer.byteLength(requestBody?.input as string)).toBe(160)
-  expect(requestBytes).toBe(1008)
-  process.env.OPENAI_INPUT_COST_PER_MILLION = 'invalid'
-  await expect(openAIAction({ objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], observation: {}, remaining: { steps: 1, seconds: 1 } })).rejects.toThrow('non-negative finite')
+  const decision = await modelAction({ objective: 'Wait', pass: [{ expect: { role: 'button', name: 'Ready' } }], observation: {}, remaining: { steps: 1, seconds: 5 } })
+  expect(decision).toEqual({ action: { type: 'wait', milliseconds: 1 }, usage: { inputTokens: 9000, outputTokens: 100 } })
+  let invocation = JSON.parse(await readFile(capture, 'utf8')) as { args: string[]; input: string; instructions: string; schema: { additionalProperties: boolean; required: string[] }; apiKey: string | null; anthropicKey: string | null; claudeToken: string | null }
+  expect(invocation.args).toContain('gpt-5.3-codex-spark')
+  expect(invocation.args).toContain('model_reasoning_effort="low"')
+  expect(invocation.args.some((arg) => arg.startsWith('model_instructions_file='))).toBe(true)
+  expect(invocation.args).toContain('web_search="disabled"')
+  expect(invocation.args).toContain('--output-schema')
+  expect(invocation.args).toContain('shell_tool')
+  expect(invocation.instructions).toContain('schema JSON')
+  expect(invocation.schema.additionalProperties).toBe(false)
+  expect(invocation.schema.required).toEqual(['type', 'scope', 'role', 'name', 'text', 'value', 'x', 'y', 'milliseconds'])
+  expect(invocation.input).toStartWith('FLEET/1\nOBJECTIVE\nWait\nPASS\n- expect role="button" name="Ready"')
+  expect(invocation.apiKey).toBeNull()
+  expect(invocation.anthropicKey).toBeNull()
+  expect(invocation.claudeToken).toBeNull()
+  process.env.CODEX_MODEL = 'gpt-5.6-luna'
+  await modelAction({ objective: 'Wait', pass: [{ expect: { role: 'button', name: 'Ready' } }], observation: {}, remaining: { steps: 1, seconds: 5 } })
+  invocation = JSON.parse(await readFile(capture, 'utf8')) as typeof invocation
+  expect(invocation.args).toContain('gpt-5.6-luna')
+  expect(invocation.args).toContain('model_reasoning_effort="medium"')
+})
+
+test('Claude provider uses subscription auth, structured output, and no tools', async () => {
+  const dir = await temporary()
+  const command = join(dir, 'claude')
+  const capture = join(dir, 'capture.json')
+  await writeFile(command, `#!/usr/bin/env bun
+const input = await Bun.stdin.text()
+await Bun.write(process.env.CLAUDE_CAPTURE, JSON.stringify({ args: Bun.argv.slice(2), input, apiKey: process.env.ANTHROPIC_API_KEY ?? null, openAIKey: process.env.OPENAI_API_KEY ?? null }))
+console.log(JSON.stringify({
+  type: 'result', structured_output: { type: 'wait', scope: null, role: null, name: null, text: null, value: null, x: null, y: null, milliseconds: 1 },
+  modelUsage: { claude: { inputTokens: 10, cacheReadInputTokens: 20, cacheCreationInputTokens: 30, outputTokens: 2, costUSD: 0.01 } }
+}))
+`)
+  await chmod(command, 0o700)
+  const previous = { ...process.env }
+  process.env.FLEET_MODEL_PROVIDER = 'claude'
+  process.env.CLAUDE_COMMAND = command
+  process.env.CLAUDE_CAPTURE = capture
+  delete process.env.CLAUDE_MODEL
+  delete process.env.CLAUDE_EFFORT
+  process.env.ANTHROPIC_API_KEY = 'must-not-reach-claude'
+  process.env.OPENAI_API_KEY = 'must-not-reach-claude'
+  cleanups.push(() => {
+    for (const key of ['FLEET_MODEL_PROVIDER', 'CLAUDE_COMMAND', 'CLAUDE_CAPTURE', 'CLAUDE_MODEL', 'CLAUDE_EFFORT', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
+      if (previous[key] === undefined) delete process.env[key]
+      else process.env[key] = previous[key]
+    }
+  })
+  const decision = await modelAction({ objective: 'Wait', pass: [{ expect: { role: 'button', name: 'Ready' } }], observation: {}, remaining: { steps: 1, seconds: 5 } })
+  expect(decision).toEqual({ action: { type: 'wait', milliseconds: 1 }, usage: { inputTokens: 60, outputTokens: 2, cost: 0.01 } })
+  const invocation = JSON.parse(await readFile(capture, 'utf8')) as { args: string[]; input: string; apiKey: string | null; openAIKey: string | null }
+  expect(invocation.args).toContain('haiku')
+  expect(invocation.args).toContain('low')
+  expect(invocation.args).toContain('--json-schema')
+  const schema = JSON.parse(invocation.args[invocation.args.indexOf('--json-schema') + 1]!) as { additionalProperties: boolean; required: string[] }
+  expect(schema.additionalProperties).toBe(false)
+  expect(schema.required).toEqual(['type', 'scope', 'role', 'name', 'text', 'value', 'x', 'y', 'milliseconds'])
+  expect(invocation.args).toContain('--system-prompt')
+  expect(invocation.args[invocation.args.indexOf('--tools') + 1]).toBe('')
+  expect(invocation.input).toStartWith('FLEET/1\nOBJECTIVE\nWait\nPASS\n- expect role="button" name="Ready"')
+  expect(invocation.apiKey).toBeNull()
+  expect(invocation.openAIKey).toBeNull()
 })
 
 function fakeInstance(root: string, processes: ProcessRecord[], changes: Partial<InstanceRecord> = {}): InstanceRecord {
@@ -678,6 +748,15 @@ async function runnerHarness(): Promise<{ root: string; instance: InstanceRecord
 }
 
 const UNREACHABLE: Suite['pass'] = [{ expect: { role: 'textbox', name: 'Never here', value: 'done' } }]
+
+test('real bridge expectation mismatches remain deterministic false conditions', async () => {
+  const client = {
+    call: async () => {
+      throw Object.assign(new Error('live bridge unavailable: expect: value "" != "notes.md"'), { code: 'BRIDGE_UNAVAILABLE' })
+    }
+  } as unknown as Parameters<typeof conditionMet>[0]
+  expect(await conditionMet(client, { expect: { role: 'textbox', name: 'Document name', value: 'notes.md' } })).toBe(false)
+})
 
 test('mock-model run passes by deterministic assertion and persists lean artifacts', async () => {
   const harness = await runnerHarness()
