@@ -47,3 +47,5 @@ value: notes.md
 
 `parseAction` remains the trust-boundary validator. Invalid TOON, extra fields,
 unsupported actions, unsafe waits, and missing fields become `runner_failure`.
+Valid JSON action objects remain accepted as a compatibility fallback when a
+model ignores the requested output format.

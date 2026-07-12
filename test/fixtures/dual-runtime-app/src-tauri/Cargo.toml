@@ -1,0 +1,18 @@
+[package]
+name = "tauri-fleet-runtime-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+default = ["wry"]
+wry = ["tauri/wry", "tauri-agent-plugin/wry"]
+cef = ["dep:tauri-runtime-cef", "tauri-agent-plugin/cef"]
+
+[dependencies]
+serde_json = "1"
+tauri = { version = "2", default-features = false }
+tauri-agent-plugin = { version = "0.0.2", default-features = false }
+tauri-runtime-cef = { git = "https://github.com/byeongsu-hong/tauri-runtime-cef", rev = "8ddc1ed48e8650432424bd51d98edf0a024dc2a4", optional = true }

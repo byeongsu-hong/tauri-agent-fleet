@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Fleet Runtime Fixture",
+  "version": "0.1.0",
+  "identifier": "dev.byeongsu.tauri-agent-fleet.runtime-fixture",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Fleet Runtime Fixture",
+        "width": 640,
+        "height": 480
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "agent": {
+      "inlineServer": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 0,
+        "publishEndpoint": true
+      }
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": []
+  }
+}
