@@ -253,6 +253,22 @@ Release order:
 5. Ducktape removal PR deletes the embedded Fleet;
 6. document legacy process/state cleanup.
 
+## Phase 8: horizontal queue and workers
+
+Add the coordinator as an optional layer above the completed local scheduler:
+
+- authenticated immutable job submission;
+- atomic global-capacity claims and renewable attempt leases;
+- bounded local parallelism in any number of worker processes/hosts;
+- clean repository identity and commit verification on every worker;
+- optional shared-filesystem build cache with fenced atomic publication;
+- bounded evidence upload and exact aggregate token/cost accounting;
+- aggregate read-only dashboard with remote VNC explicitly unavailable.
+
+The implementation and H1-H12 completion gates are specified in
+`docs/horizontal-scaling.md`. Horizontal completion requires multi-worker proof;
+single-worker scheduler coverage is insufficient.
+
 ## PR slicing
 
 Recommended independently reviewable sequence:

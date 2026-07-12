@@ -37,7 +37,7 @@ function inside(root: string, file: string): boolean {
   return path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path)
 }
 
-async function fileResponse(request: Request, root: string, pathname: string): Promise<Response> {
+export async function fileResponse(request: Request, root: string, pathname: string): Promise<Response> {
   let decoded: string
   try { decoded = decodeURIComponent(pathname) } catch { return new Response('bad path', { status: 400 }) }
   const file = resolve(root, `.${decoded === '/' ? '/index.html' : decoded}`)

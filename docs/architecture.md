@@ -121,6 +121,28 @@ failure evidence, runtime, clean/dirty revision state, run progress, usage, heal
 artifact/VNC URLs; persisted directories, processes, ports, endpoint
 capabilities, and cache keys remain internal.
 
+### Horizontal coordinator and workers
+
+Horizontal mode keeps the same instance manager and runner on each Linux host.
+An authenticated coordinator owns only immutable job inputs, atomic leases,
+global capacity, terminal summaries, and bounded uploaded evidence. Worker
+processes own local checkout resolution, shared/private build-cache access,
+isolated state roots, exact process groups, heartbeats, execution, upload, and
+teardown.
+
+```text
+submitter -> coordinator queue <- worker A (local Fleet jobs)
+                               <- worker B (local Fleet jobs)
+                               <- worker N (local Fleet jobs)
+```
+
+At-least-once leases make a job eligible elsewhere after a missed heartbeat.
+Random attempt-scoped lease tokens fence stale heartbeat, upload, and completion
+requests. Requeued jobs discard partial evidence from the expired attempt. The
+coordinator never fetches Git refs, runs application hooks, receives plugin
+tokens, or proxies worker VNC ports. See `docs/horizontal-scaling.md` for the
+normative protocol and acceptance matrix.
+
 ## Configuration contract
 
 The v1 application configuration lives at `.tauri-agent/fleet.json`. Fleet
@@ -227,6 +249,8 @@ and a reusable subflow language are out of v1 scope.
 - Dashboard bind defaults to `127.0.0.1`.
 - Remote access is an explicit operator choice; v1 has no dashboard auth and
   should be tunneled rather than exposed directly.
+- Coordinator APIs require a bearer token of at least 32 opaque characters;
+  horizontal v1 still relies on a private network or tunnel for TLS.
 - VNC servers bind to loopback and are routed by random opaque tokens.
 - State/runtime directories use user-private permissions.
 - Plugin session tokens remain in the plugin endpoint registry.

@@ -108,6 +108,11 @@ Do not append:
 Persist those details as artifacts. A failure-analysis model may retrieve a
 bounded section later.
 
+Horizontal coordination does not add model context. Workers persist the same
+per-run usage artifact and send only input/output/cost totals to the
+coordinator. Aggregate usage is the arithmetic sum of those terminal summaries;
+the coordinator never receives or repeats model transcripts in later prompts.
+
 Binary providers send the same lean runner context as lossless TOON rather than
 JSON. The July 2026 one-action CEF smoke measured before the TOON conversion:
 
