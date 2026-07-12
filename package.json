@@ -27,6 +27,7 @@
   "dependencies": {
     "@byeongsu-hong/tauri-agent-plugin": "^0.0.2",
     "@novnc/novnc": "^1.6.0",
+    "@toon-format/toon": "^2.3.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },

@@ -108,8 +108,8 @@ Do not append:
 Persist those details as artifacts. A failure-analysis model may retrieve a
 bounded section later.
 
-Binary providers send the same lean runner context as compact `FLEET/1` text
-rather than JSON. The July 2026 identical one-action CEF smoke measured:
+Binary providers send the same lean runner context as lossless TOON rather than
+JSON. The July 2026 one-action CEF smoke measured before the TOON conversion:
 
 | Provider | Before | After | Prompt change | Total change |
 | --- | ---: | ---: | ---: | ---: |
