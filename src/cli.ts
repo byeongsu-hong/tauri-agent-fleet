@@ -2,12 +2,15 @@
 import { access } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { buildArtifact } from './build.ts'
+import { COORDINATOR_PROTOCOL } from './coordinator.ts'
+import { CoordinatorClient, startCoordinator } from './coordinator-server.ts'
 import { createInstance, refreshInstance, stopInstance } from './instance.ts'
-import { discoverRevision } from './revision.ts'
+import { discoverRevision, requireCleanRevision } from './revision.ts'
 import { defaultVariant, runSuites } from './scheduler.ts'
 import { startDashboard } from './server.ts'
 import { listInstances, loadConfig, loadSuite, stateRoot } from './storage.ts'
 import type { RuntimeVariant } from './types.ts'
+import { runWorker } from './worker.ts'
 
 const HELP = `tauri-agent-fleet <command> [options]
 
@@ -18,6 +21,10 @@ Commands:
   status [--json]                  show instance and run health
   dashboard [--host HOST] [--port PORT]
   test <suite...> [--revision REF] [--runtime wry|cef] [--jobs N]
+  coordinator [--host HOST] [--port PORT] [--max-active N]
+  submit <suite...> --coordinator URL [--revision REF] [--runtime wry|cef]
+  worker --coordinator URL --id ID [--jobs N] [--once]
+  remote-status --coordinator URL [--json]
 
 Options:
   --config PATH                    config file (default .tauri-agent/fleet.json)
@@ -46,6 +53,18 @@ function runtime(value: string | undefined): RuntimeVariant | undefined {
   return value
 }
 
+function positive(value: string | undefined, fallback: number, name: string): number {
+  const number = Number(value ?? fallback)
+  if (!Number.isSafeInteger(number) || number < 1) throw new Error(`${name} must be a positive safe integer`)
+  return number
+}
+
+function coordinatorToken(): string {
+  const token = process.env.FLEET_COORDINATOR_TOKEN ?? ''
+  if (token.length < 32) throw new Error('FLEET_COORDINATOR_TOKEN must contain at least 32 characters')
+  return token
+}
+
 async function assetsPath(): Promise<string> {
   const bundled = join(import.meta.dir, 'dashboard')
   try { await access(bundled); return bundled } catch { return resolve(import.meta.dir, '../dist/dashboard') }
@@ -57,10 +76,81 @@ async function main(): Promise<number> {
   if (flag(args, '--version')) { console.log('0.1.0'); return 0 }
   const configOption = take(args, '--config')
   const command = args.shift()!
-  if (!['up', 'down', 'status', 'dashboard', 'test'].includes(command)) throw new Error(`unknown command: ${command}\n\n${HELP}`)
+  if (!['up', 'down', 'status', 'dashboard', 'test', 'coordinator', 'submit', 'worker', 'remote-status'].includes(command)) throw new Error(`unknown command: ${command}\n\n${HELP}`)
   const loaded = await loadConfig(configOption)
   const root = stateRoot(loaded.path)
   const repository = loaded.workspace
+  if (command === 'coordinator') {
+    const host = take(args, '--host') ?? '127.0.0.1'
+    const port = Number(take(args, '--port') ?? 4180)
+    const maxActive = positive(take(args, '--max-active'), 8, '--max-active')
+    if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('--port must be a valid port')
+    if (args.length) throw new Error(`unknown option: ${args[0]}`)
+    const server = startCoordinator({ root: join(root, 'coordinator'), token: coordinatorToken(), host, port, maxActive, assets: await assetsPath() })
+    console.log(`coordinator listening on ${server.url}`)
+    await new Promise<void>((resolve) => {
+      const stop = () => { server.stop(true); resolve() }
+      process.once('SIGINT', stop)
+      process.once('SIGTERM', stop)
+    })
+    return 0
+  }
+  if (command === 'submit') {
+    const url = take(args, '--coordinator')
+    if (!url) throw new Error('submit requires --coordinator URL')
+    const revisionName = take(args, '--revision') ?? 'HEAD'
+    const selectedVariant = runtime(take(args, '--runtime'))
+    if (!args.length) throw new Error('submit requires at least one suite ID')
+    const suites = await Promise.all(args.map((id) => loadSuite(loaded.workspace, id)))
+    const revision = await discoverRevision(repository, revisionName, root)
+    requireCleanRevision(revision)
+    const client = new CoordinatorClient(url, coordinatorToken())
+    for (const suite of suites) {
+      const selected = selectedVariant ?? suite.runtime ?? defaultVariant(loaded.config)
+      const job = await client.enqueue({ protocol: COORDINATOR_PROTOCOL, repository: revision.repository, commit: revision.commit, suite, runtime: selected })
+      console.log(`${job.id}\t${suite.id}\t${selected}\t${job.state}`)
+    }
+    return 0
+  }
+  if (command === 'worker') {
+    const url = take(args, '--coordinator')
+    const id = take(args, '--id')
+    const jobs = positive(take(args, '--jobs'), 1, '--jobs')
+    const once = flag(args, '--once')
+    if (!url || !id) throw new Error('worker requires --coordinator URL and --id ID')
+    if (args.length) throw new Error(`unknown option: ${args[0]}`)
+    const controller = new AbortController()
+    const stop = () => controller.abort()
+    process.once('SIGINT', stop)
+    process.once('SIGTERM', stop)
+    try {
+      await runWorker({
+        client: new CoordinatorClient(url, coordinatorToken()), config: loaded.config, repository,
+        root: join(root, 'workers', id), id, jobs, once, signal: controller.signal
+      })
+    } finally {
+      process.off('SIGINT', stop)
+      process.off('SIGTERM', stop)
+    }
+    return 0
+  }
+  if (command === 'remote-status') {
+    const url = take(args, '--coordinator')
+    const json = flag(args, '--json')
+    if (!url) throw new Error('remote-status requires --coordinator URL')
+    if (args.length) throw new Error(`unknown option: ${args[0]}`)
+    const value = await new CoordinatorClient(url, coordinatorToken()).status() as {
+      summary: Record<string, number>
+      jobs: Array<{ id: string; state: string; workerId?: string; commit: string; runtime: string; suite: { id: string }; attempt: number }>
+    }
+    if (json) console.log(JSON.stringify(value, null, 2))
+    else {
+      console.log(`TOTAL ${value.summary.total}  QUEUED ${value.summary.queued}  ACTIVE ${value.summary.active}  PASSED ${value.summary.passed}  FAILED ${value.summary.failed}`)
+      console.log('JOB\tSTATE\tWORKER\tREVISION\tRUNTIME\tSUITE\tATTEMPT')
+      for (const job of value.jobs) console.log([job.id, job.state, job.workerId ?? '-', job.commit.slice(0, 12), job.runtime, job.suite.id, job.attempt].join('\t'))
+    }
+    return 0
+  }
   if (command === 'up') {
     const selectedVariant = runtime(take(args, '--runtime')) ?? defaultVariant(loaded.config)
     const id = take(args, '--id')
@@ -116,7 +206,7 @@ async function main(): Promise<number> {
   if (command === 'test') {
     const revisionName = take(args, '--revision') ?? 'HEAD'
     const selectedVariant = runtime(take(args, '--runtime'))
-    const jobs = Number(take(args, '--jobs') ?? 1)
+    const jobs = positive(take(args, '--jobs'), 1, '--jobs')
     if (!args.length) throw new Error('test requires at least one suite ID')
     const suites = await Promise.all(args.map((id) => loadSuite(loaded.workspace, id)))
     const revision = await discoverRevision(repository, revisionName, root)

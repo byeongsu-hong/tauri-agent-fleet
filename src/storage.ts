@@ -84,6 +84,85 @@ export async function withLock<T>(path: string, action: () => Promise<T>, timeou
   try { return await action() } finally { await rm(path, { force: true }) }
 }
 
+export async function withRenewableLock<T>(
+  path: string,
+  action: (assertOwned: () => Promise<void>) => Promise<T>,
+  timeoutMs = 10 * 60_000,
+  leaseMs = 30_000
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  const token = crypto.randomUUID()
+  const ownerPath = join(path, 'owner.json')
+  await privateDir(dirname(path))
+  while (true) {
+    const candidate = `${path}.candidate.${crypto.randomUUID()}`
+    try {
+      await mkdir(candidate, { mode: 0o700 })
+      await atomicJson(join(candidate, 'owner.json'), { token, expiresAt: Date.now() + leaseMs })
+      await rename(candidate, path)
+      break
+    } catch (error) {
+      await rm(candidate, { recursive: true, force: true })
+      if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+      try {
+        const owner = JSON.parse(await readFile(ownerPath, 'utf8')) as { token?: unknown; expiresAt?: unknown }
+        if (typeof owner.expiresAt === 'number' && owner.expiresAt < Date.now()) {
+          const stale = `${path}.stale.${crypto.randomUUID()}`
+          try {
+            await rename(path, stale)
+            const moved = JSON.parse(await readFile(join(stale, 'owner.json'), 'utf8')) as { token?: unknown; expiresAt?: unknown }
+            if (moved.token !== owner.token || typeof moved.expiresAt !== 'number' || moved.expiresAt >= Date.now()) {
+              await rename(stale, path)
+            } else {
+              await rm(stale, { recursive: true, force: true })
+              continue
+            }
+          } catch { /* another contender won or the owner recovered */ }
+        }
+      } catch { /* wait for initial owner publication or recovery */ }
+      if (Date.now() >= deadline) throw new Error(`timed out waiting for shared lock: ${path}`)
+      await Bun.sleep(100)
+    }
+  }
+  let lost = false
+  const assertOwned = async (): Promise<void> => {
+    try {
+      const owner = JSON.parse(await readFile(ownerPath, 'utf8')) as { token?: unknown; expiresAt?: unknown }
+      if (owner.token !== token || typeof owner.expiresAt !== 'number' || owner.expiresAt <= Date.now()) throw new Error('shared build lock lease was lost')
+    } catch (error) {
+      lost = true
+      throw error
+    }
+  }
+  const renew = async (): Promise<void> => {
+    const file = await open(ownerPath, 'r+')
+    try {
+      const owner = JSON.parse(await file.readFile('utf8')) as { token?: unknown; expiresAt?: unknown }
+      if (owner.token !== token || typeof owner.expiresAt !== 'number' || owner.expiresAt <= Date.now()) throw new Error('shared build lock lease was lost')
+      const value = Buffer.from(`${JSON.stringify({ token, expiresAt: Date.now() + leaseMs }, null, 2)}\n`)
+      await file.truncate(0)
+      await file.write(value, 0, value.length, 0)
+      await file.sync()
+    } catch (error) {
+      lost = true
+      throw error
+    } finally { await file.close() }
+  }
+  const renewal = setInterval(() => {
+    void renew().catch(() => { lost = true })
+  }, Math.max(100, Math.floor(leaseMs / 3)))
+  try {
+    const result = await action(assertOwned)
+    await assertOwned()
+    return result
+  } finally {
+    clearInterval(renewal)
+    if (!lost) {
+      try { await assertOwned(); await rm(path, { recursive: true, force: true }) } catch { /* never remove a successor's lock */ }
+    }
+  }
+}
+
 async function processStartTime(pid: number): Promise<string | undefined> {
   try {
     const value = await readFile(`/proc/${pid}/stat`, 'utf8')

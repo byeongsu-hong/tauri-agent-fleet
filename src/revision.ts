@@ -7,6 +7,11 @@ import type { Revision, RuntimeVariant } from './types.ts'
 
 export const CLEAN_FINGERPRINT = createHash('sha256').digest('hex')
 
+export function requireCleanRevision(revision: Revision): Revision {
+  if (revision.dirtyFingerprint !== CLEAN_FINGERPRINT) throw new Error('horizontal execution requires a clean revision')
+  return revision
+}
+
 export async function resolveInsideWorktree(worktree: string, path: string): Promise<string> {
   const root = await realpath(worktree)
   const target = await realpath(resolve(root, path))
