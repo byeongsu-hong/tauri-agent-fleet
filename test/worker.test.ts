@@ -51,3 +51,28 @@ test('worker drains several claims with bounded local parallelism and reports re
     expect(finished.sort()).toEqual(['job-0', 'job-1', 'job-2', 'job-3'])
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+test('worker bounds infrastructure errors before terminal publication', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fleet-worker-error-'))
+  const job = {
+    protocol: 'tauri-agent-coordinator/v1', id: 'job-error', repository: 'a'.repeat(64), commit: 'b'.repeat(40),
+    suite: { protocol: 'tauri-agent-suite/v1', id: 'suite-error', objective: 'pass', pass: [], budget: { steps: 1, seconds: 1 } },
+    runtime: 'wry', state: 'leased', attempt: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  } satisfies PublicCoordinatorJob
+  let result: unknown
+  let claimed = false
+  const client: WorkerClient = {
+    claim: async () => claimed ? undefined : (claimed = true, { job, leaseToken: 'lease' }),
+    heartbeat: async () => job,
+    upload: async () => job,
+    finish: async (_id, _worker, _lease, value) => { result = value; return job }
+  }
+  try {
+    await runWorker({
+      client, config, repository: root, root, id: 'worker-a', jobs: 1, once: true, pollMs: 1,
+      resolveRevision: async () => ({ repository: job.repository, worktree: root, commit: job.commit, dirtyFingerprint: '' }),
+      execute: async () => { throw new Error('x'.repeat(10_000)) }
+    })
+    expect((result as { failure: { message: string } }).failure.message).toHaveLength(8_192)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})

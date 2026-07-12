@@ -74,10 +74,15 @@ function resultFor(instance: InstanceRecord): unknown {
     state: 'failed',
     failure: {
       class: run?.failure ?? instance.failure?.class ?? 'infrastructure_failure',
-      message: run?.message ?? instance.failure?.message ?? `suite ended in ${instance.state}`
+      message: failureMessage(run?.message ?? instance.failure?.message ?? `suite ended in ${instance.state}`)
     },
     ...(usage ? { run: usage } : {})
   }
+}
+
+function failureMessage(value: unknown): string {
+  const message = value instanceof Error ? value.message : String(value)
+  return (message || 'unknown worker failure').slice(0, 8_192)
 }
 
 async function executeClaim(options: WorkerOptions, claim: { job: PublicCoordinatorJob; leaseToken: string }): Promise<void> {
@@ -104,7 +109,7 @@ async function executeClaim(options: WorkerOptions, claim: { job: PublicCoordina
     try {
       await options.client.finish(job.id, options.id, leaseToken, {
         state: 'failed',
-        failure: { class: 'infrastructure_failure', message: error instanceof Error ? error.message : String(error) }
+        failure: { class: 'infrastructure_failure', message: failureMessage(error) }
       })
     } catch (finishError) {
       if (!(finishError instanceof CoordinatorError && finishError.status === 409)) throw finishError
