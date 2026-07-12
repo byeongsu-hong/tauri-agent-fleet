@@ -21,7 +21,8 @@ import { startDashboard } from '../src/server.ts'
 import { conditionMet, runSuite, type NextAction } from '../src/runner.ts'
 import { defaultVariant, runSuites } from '../src/scheduler.ts'
 import { freePort, portOpen, waitFor } from '../src/network.ts'
-import { modelAction } from '../src/provider.ts'
+import { decodeInstruction, encodeInstruction, instructionToJson, jsonToInstruction } from '../src/instruction.ts'
+import { formatActionText, modelAction, parseActionText } from '../src/provider.ts'
 import type { FleetConfig, InstanceRecord, ProcessRecord, Suite } from '../src/types.ts'
 
 const cleanups: Array<() => void | Promise<void>> = []
@@ -32,6 +33,14 @@ async function temporary(): Promise<string> {
   cleanups.push(() => rm(path, { recursive: true, force: true }))
   return path
 }
+
+test('TOON instructions round-trip the JSON data model and typed actions', () => {
+  const value = { objective: 'Save "notes"', pass: [{ state: { key: 'saved', equals: true } }], values: [null, 1, 'two\nlines'] }
+  expect(decodeInstruction(encodeInstruction(value))).toEqual(value)
+  expect(JSON.parse(instructionToJson(jsonToInstruction(JSON.stringify(value))))).toEqual(value)
+  const action = { type: 'fill', role: 'textbox', name: 'Document name', value: 'notes.md' } as const
+  expect(parseActionText(formatActionText(action))).toEqual(action)
+})
 
 const CONFIG: FleetConfig = {
   protocol: 'tauri-agent-fleet/v1',
@@ -613,10 +622,8 @@ const input = await Bun.stdin.text()
 const args = Bun.argv.slice(2)
 const config = args.find((arg) => arg.startsWith('model_instructions_file='))
 const instructions = config ? await Bun.file(JSON.parse(config.slice(config.indexOf('=') + 1))).text() : null
-const schemaIndex = args.indexOf('--output-schema')
-const schema = schemaIndex < 0 ? null : JSON.parse(await Bun.file(args[schemaIndex + 1]).text())
-await Bun.write(process.env.CODEX_CAPTURE, JSON.stringify({ args, input, instructions, schema, apiKey: process.env.OPENAI_API_KEY ?? null, anthropicKey: process.env.ANTHROPIC_API_KEY ?? null, claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null }))
-console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '{"type":"wait","scope":null,"role":null,"name":null,"text":null,"value":null,"x":null,"y":null,"milliseconds":1}' } }))
+await Bun.write(process.env.CODEX_CAPTURE, JSON.stringify({ args, input, instructions, apiKey: process.env.OPENAI_API_KEY ?? null, anthropicKey: process.env.ANTHROPIC_API_KEY ?? null, claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null }))
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'type: wait\\nmilliseconds: 1' } }))
 console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 9000, output_tokens: 100 } }))
 `)
   await chmod(command, 0o700)
@@ -637,17 +644,17 @@ console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 9000
   })
   const decision = await modelAction({ objective: 'Wait', pass: [{ expect: { role: 'button', name: 'Ready' } }], observation: {}, remaining: { steps: 1, seconds: 5 } })
   expect(decision).toEqual({ action: { type: 'wait', milliseconds: 1 }, usage: { inputTokens: 9000, outputTokens: 100 } })
-  let invocation = JSON.parse(await readFile(capture, 'utf8')) as { args: string[]; input: string; instructions: string; schema: { additionalProperties: boolean; required: string[] }; apiKey: string | null; anthropicKey: string | null; claudeToken: string | null }
+  let invocation = JSON.parse(await readFile(capture, 'utf8')) as { args: string[]; input: string; instructions: string; apiKey: string | null; anthropicKey: string | null; claudeToken: string | null }
   expect(invocation.args).toContain('gpt-5.3-codex-spark')
   expect(invocation.args).toContain('model_reasoning_effort="low"')
   expect(invocation.args.some((arg) => arg.startsWith('model_instructions_file='))).toBe(true)
   expect(invocation.args).toContain('web_search="disabled"')
-  expect(invocation.args).toContain('--output-schema')
+  expect(invocation.args).not.toContain('--output-schema')
   expect(invocation.args).toContain('shell_tool')
-  expect(invocation.instructions).toContain('schema JSON')
-  expect(invocation.schema.additionalProperties).toBe(false)
-  expect(invocation.schema.required).toEqual(['type', 'scope', 'role', 'name', 'text', 'value', 'x', 'y', 'milliseconds'])
-  expect(invocation.input).toStartWith('FLEET/1\nOBJECTIVE\nWait\nPASS\n- expect role="button" name="Ready"')
+  expect(invocation.instructions).toContain('Return only one TOON object')
+  expect(invocation.instructions).toContain('no JSON')
+  expect(invocation.input).toStartWith('objective: Wait\npass[1]:')
+  expect(decodeInstruction(invocation.input)).toEqual({ objective: 'Wait', pass: [{ expect: { role: 'button', name: 'Ready' } }], observation: {}, remaining: { steps: 1, seconds: 5 } })
   expect(invocation.apiKey).toBeNull()
   expect(invocation.anthropicKey).toBeNull()
   expect(invocation.claudeToken).toBeNull()
@@ -658,7 +665,7 @@ console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 9000
   expect(invocation.args).toContain('model_reasoning_effort="medium"')
 })
 
-test('Claude provider uses subscription auth, structured output, and no tools', async () => {
+test('Claude provider uses subscription auth, TOON output, and no tools', async () => {
   const dir = await temporary()
   const command = join(dir, 'claude')
   const capture = join(dir, 'capture.json')
@@ -666,7 +673,7 @@ test('Claude provider uses subscription auth, structured output, and no tools', 
 const input = await Bun.stdin.text()
 await Bun.write(process.env.CLAUDE_CAPTURE, JSON.stringify({ args: Bun.argv.slice(2), input, apiKey: process.env.ANTHROPIC_API_KEY ?? null, openAIKey: process.env.OPENAI_API_KEY ?? null }))
 console.log(JSON.stringify({
-  type: 'result', structured_output: { type: 'wait', scope: null, role: null, name: null, text: null, value: null, x: null, y: null, milliseconds: 1 },
+  type: 'result', result: 'type: wait\\nmilliseconds: 1',
   modelUsage: { claude: { inputTokens: 10, cacheReadInputTokens: 20, cacheCreationInputTokens: 30, outputTokens: 2, costUSD: 0.01 } }
 }))
 `)
@@ -690,13 +697,11 @@ console.log(JSON.stringify({
   const invocation = JSON.parse(await readFile(capture, 'utf8')) as { args: string[]; input: string; apiKey: string | null; openAIKey: string | null }
   expect(invocation.args).toContain('haiku')
   expect(invocation.args).toContain('low')
-  expect(invocation.args).toContain('--json-schema')
-  const schema = JSON.parse(invocation.args[invocation.args.indexOf('--json-schema') + 1]!) as { additionalProperties: boolean; required: string[] }
-  expect(schema.additionalProperties).toBe(false)
-  expect(schema.required).toEqual(['type', 'scope', 'role', 'name', 'text', 'value', 'x', 'y', 'milliseconds'])
+  expect(invocation.args).not.toContain('--json-schema')
   expect(invocation.args).toContain('--system-prompt')
   expect(invocation.args[invocation.args.indexOf('--tools') + 1]).toBe('')
-  expect(invocation.input).toStartWith('FLEET/1\nOBJECTIVE\nWait\nPASS\n- expect role="button" name="Ready"')
+  expect(invocation.input).toStartWith('objective: Wait\npass[1]:')
+  expect(decodeInstruction(invocation.input)).toEqual({ objective: 'Wait', pass: [{ expect: { role: 'button', name: 'Ready' } }], observation: {}, remaining: { steps: 1, seconds: 5 } })
   expect(invocation.apiKey).toBeNull()
   expect(invocation.openAIKey).toBeNull()
 })

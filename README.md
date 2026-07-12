@@ -155,10 +155,6 @@ without model tools. Codex replaces its built-in instructions with a private
 temporary Fleet prompt. Provider-reported prompt overhead counts toward suite
 token budgets.
 
-Runner turns use a compact, human-readable `FLEET/1` text format instead of
-JSON. Model actions remain strict schema-constrained JSON so Fleet can validate
-them deterministically.
-
 ```bash
 # ChatGPT login: Codex Spark, low
 tauri-agent-fleet test editor-save
@@ -176,6 +172,10 @@ FLEET_MODEL_PROVIDER=claude CLAUDE_MODEL=sonnet tauri-agent-fleet test editor-sa
 Use `CODEX_REASONING_EFFORT` or `CLAUDE_EFFORT` to override effort. The optional
 `CODEX_COMMAND` and `CLAUDE_COMMAND` variables select a non-default binary path.
 Run `codex login status` or `claude auth status` to verify subscription auth.
+
+Runner turns and actions use lossless, human-readable TOON instead of JSON at
+the model boundary. JSON-compatible values round-trip through the shared codec;
+see [the runner instruction contract](docs/runner-instructions.md).
 
 ```bash
 tauri-agent-fleet up HEAD

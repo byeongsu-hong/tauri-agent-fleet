@@ -182,10 +182,10 @@ Gate:
 
 ### Provider
 
-Use authenticated Codex and Claude binaries with compact `FLEET/1` input,
-strict schema-constrained JSON output, and no model tools. Replace Codex's
-built-in instructions and keep selection to one environment switch; do not add
-an SDK/provider framework or a general-purpose input parser.
+Use authenticated Codex and Claude binaries with TOON input/output and no model
+tools. Round-trip the JSON data model through one shared codec, replace Codex's
+built-in instructions, and keep selection to one environment switch; do not add
+an SDK/provider framework.
 
 ### Loop
 
