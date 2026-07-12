@@ -31,7 +31,7 @@ test('two horizontal workers drain six runtime jobs with evidence and exact aggr
   const assigned = { a: new Set<string>(), b: new Set<string>() }
   const execute = (worker: keyof typeof assigned) => async (_config: FleetConfig, workerRoot: string, revision: Revision, job: Awaited<ReturnType<typeof client.enqueue>>): Promise<InstanceRecord> => {
     assigned[worker].add(job.id)
-    await Bun.sleep(15)
+    await Bun.sleep(100)
     const runId = `run-${job.id}`
     const artifacts = join(workerRoot, 'evidence', job.id)
     const directory = join(artifacts, runId)
@@ -77,13 +77,13 @@ test('two horizontal workers drain six runtime jobs with evidence and exact aggr
 
 test('expired leases cannot heartbeat, upload, or finish after reassignment', async () => {
   const root = await mkdtemp(join(tmpdir(), 'fleet-horizontal-expiry-'))
-  const server = startCoordinator({ root, token, port: 0, maxActive: 1, leaseMs: 5 })
+  const server = startCoordinator({ root, token, port: 0, maxActive: 1, leaseMs: 500 })
   const client = new CoordinatorClient(server.url.toString(), token)
   try {
     const job = await client.enqueue(input(1, 'wry'))
     const stale = (await client.claim('worker-old'))!
     await client.upload(job.id, 'worker-old', stale.leaseToken, 'run.json', new TextEncoder().encode('stale'))
-    await Bun.sleep(10)
+    await Bun.sleep(600)
     await client.status()
     const current = (await client.claim('worker-new'))!
     expect(current.job.id).toBe(job.id)
