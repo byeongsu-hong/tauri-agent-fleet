@@ -2,9 +2,9 @@ import { access, lstat, readFile, realpath, rename, rm, stat } from 'node:fs/pro
 import { constants } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { runCommand } from './command.ts'
-import { artifactKey, resolveInsideWorktree } from './revision.ts'
+import { artifactKey, CLEAN_FINGERPRINT, resolveInsideWorktree } from './revision.ts'
 import { parseArtifactManifest } from './schema.ts'
-import { atomicJson, privateDir, withLock } from './storage.ts'
+import { atomicJson, privateDir, withLock, withRenewableLock } from './storage.ts'
 import type { ArtifactManifest, FleetConfig, Revision, RuntimeVariant } from './types.ts'
 
 export interface Artifact { key: string; dir: string; manifest: ArtifactManifest }
@@ -43,16 +43,19 @@ export async function buildArtifact(
   const definition = config.runtimes[variant]
   if (!definition) throw new Error(`runtime is not configured: ${variant}`)
   const key = artifactKey(revision, variant)
-  const container = join(root, 'artifacts')
+  const shared = process.env.FLEET_ARTIFACT_CACHE
+  if (shared && !isAbsolute(shared)) throw new Error('FLEET_ARTIFACT_CACHE must be an absolute path')
+  if (shared && revision.dirtyFingerprint !== CLEAN_FINGERPRINT) throw new Error('shared artifact cache requires a clean revision')
+  const container = shared ? resolve(shared) : join(root, 'artifacts')
   const dir = join(container, key)
   await privateDir(container)
   const containerRoot = await realpath(container)
   const cached = await validArtifact(dir, containerRoot)
   if (cached) return { key, dir, manifest: cached }
-  return await withLock(`${dir}.lock`, async () => {
+  const build = async (assertOwned: () => Promise<void>): Promise<Artifact> => {
     const raced = await validArtifact(dir, containerRoot)
     if (raced) return { key, dir, manifest: raced }
-    const staging = `${dir}.${process.pid}.tmp`
+    const staging = `${dir}.${process.pid}.${crypto.randomUUID()}.tmp`
     await rm(staging, { recursive: true, force: true })
     await privateDir(staging)
     try {
@@ -79,7 +82,12 @@ export async function buildArtifact(
       await runCommand(definition.build, { cwd: project, env })
       const manifest = await validArtifact(staging, containerRoot)
       if (!manifest) throw new Error(`build did not create a valid artifact at ${join(staging, 'manifest.json')}`)
-      await atomicJson(join(staging, 'build.json'), { schemaVersion: 1, key, revision, variant, builtAt: new Date().toISOString() })
+      await atomicJson(join(staging, 'build.json'), {
+        schemaVersion: 1, key,
+        revision: { repository: revision.repository, commit: revision.commit, dirtyFingerprint: revision.dirtyFingerprint },
+        variant, builtAt: new Date().toISOString()
+      })
+      await assertOwned()
       await rm(dir, { recursive: true, force: true })
       await rename(staging, dir)
       const installed = await validArtifact(dir, containerRoot)
@@ -89,5 +97,8 @@ export async function buildArtifact(
       }
       return { key, dir, manifest: installed }
     } finally { await rm(staging, { recursive: true, force: true }) }
-  }, 10 * 60_000)
+  }
+  return shared
+    ? await withRenewableLock(`${dir}.lock`, build)
+    : await withLock(`${dir}.lock`, () => build(async () => {}), 10 * 60_000)
 }

@@ -1,10 +1,10 @@
-import { StrictMode, useEffect, useMemo, useRef, useState } from 'react'
+import { StrictMode, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import RFB from '@novnc/novnc'
 import './style.css'
 
-type State = 'booting' | 'ready' | 'running' | 'passed' | 'failed' | 'stopped'
-type Filter = 'all' | 'live' | 'running' | 'passed' | 'failed' | 'stopped'
+type State = 'queued' | 'leased' | 'booting' | 'ready' | 'running' | 'passed' | 'failed' | 'stopped'
+type Filter = 'all' | 'live' | 'queued' | 'running' | 'passed' | 'failed' | 'stopped'
 
 interface Run {
   id: string
@@ -34,6 +34,8 @@ interface Instance {
   vnc: { available: boolean; websocket?: string }
   failure?: { class: string; message: string }
   run?: Run
+  worker?: string
+  remote?: boolean
 }
 
 interface Fleet {
@@ -43,21 +45,67 @@ interface Fleet {
   instances: Instance[]
 }
 
-const LIVE = new Set<State>(['booting', 'ready', 'running'])
+const LIVE = new Set<State>(['leased', 'booting', 'ready', 'running'])
 
-function useFleet(): { fleet: Fleet | undefined; error: string | undefined } {
+interface CoordinatorFleet {
+  protocol: 'tauri-agent-coordinator/v1'
+  generatedAt: string
+  summary: { total: number; queued: number; active: number; passed: number; failed: number; inputTokens: number; outputTokens: number; cost: number }
+  jobs: Array<{
+    id: string; state: 'queued' | 'leased' | 'running' | 'passed' | 'failed'; workerId?: string; commit: string; runtime: 'wry' | 'cef'; attempt: number
+    createdAt: string; updatedAt: string; suite: { id: string; objective: string; budget: { steps: number; seconds: number; tokens?: number } }
+    failure?: { class: string; message: string }; run?: { inputTokens: number; outputTokens: number; cost?: number }; artifacts?: string[]
+  }>
+}
+
+function normalize(value: Fleet | CoordinatorFleet): Fleet {
+  if (value.protocol === 'tauri-agent-console/v1') return value
+  const now = Date.parse(value.generatedAt)
+  return {
+    protocol: 'tauri-agent-console/v1', generatedAt: value.generatedAt,
+    summary: {
+      total: value.summary.total, live: value.summary.active, running: value.summary.active,
+      passed: value.summary.passed, failed: value.summary.failed,
+      tokens: value.summary.inputTokens + value.summary.outputTokens, cost: value.summary.cost
+    },
+    instances: value.jobs.map((job) => ({
+      id: job.id, state: job.state, runtime: job.runtime, revision: { commit: job.commit, dirty: false },
+      display: job.workerId ?? 'Unassigned', ...(job.workerId ? { worker: job.workerId } : {}), remote: true,
+      agent: { healthy: job.state === 'leased' || job.state === 'running' }, vnc: { available: false },
+      ...(job.failure ? { failure: job.failure } : {}),
+      run: {
+        id: job.id, suite: job.suite.id, objective: job.suite.objective,
+        progress: {
+          step: 0, stepLimit: job.suite.budget.steps,
+          elapsedMs: Math.max(0, (job.state === 'passed' || job.state === 'failed' ? Date.parse(job.updatedAt) : now) - Date.parse(job.createdAt)),
+          timeLimitMs: job.suite.budget.seconds * 1000,
+          inputTokens: job.run?.inputTokens ?? 0, outputTokens: job.run?.outputTokens ?? 0,
+          ...(job.suite.budget.tokens === undefined ? {} : { tokenLimit: job.suite.budget.tokens })
+        },
+        ...(job.run?.cost === undefined ? {} : { cost: job.run.cost }),
+        ...(job.failure ? { failure: job.failure } : {}),
+        artifacts: Object.fromEntries((job.artifacts ?? []).map((name) => [name === 'model-usage.jsonl' ? 'usage' : name === 'failure.png' ? 'screenshot' : name.replace(/\.(jsonl|json)$/, ''), `/api/v1/jobs/${encodeURIComponent(job.id)}/artifacts/${encodeURIComponent(name)}`]))
+      }
+    }))
+  }
+}
+
+function useFleet(): { fleet: Fleet | undefined; error: string | undefined; authorizationRequired: boolean; setToken: (token: string) => void } {
   const [fleet, setFleet] = useState<Fleet>()
   const [error, setError] = useState<string>()
+  const [authorizationRequired, setAuthorizationRequired] = useState(false)
+  const [token, updateToken] = useState(() => sessionStorage.getItem('fleet-coordinator-token') ?? '')
   useEffect(() => {
     let alive = true
     let timer: ReturnType<typeof setTimeout>
     const update = async () => {
       try {
-        const response = await fetch('/api/v1/fleet', { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+        const response = await fetch('/api/v1/fleet', { cache: 'no-store', signal: AbortSignal.timeout(5000), headers: token ? { authorization: `Bearer ${token}` } : {} })
+        if (response.status === 401) setAuthorizationRequired(true)
         if (!response.ok) throw new Error(`Fleet returned ${response.status}`)
-        const next = await response.json() as Fleet
-        if (next.protocol !== 'tauri-agent-console/v1') throw new Error('Unsupported Fleet console protocol')
-        if (alive) { setFleet(next); setError(undefined) }
+        const raw = await response.json() as Fleet | CoordinatorFleet
+        if (raw.protocol !== 'tauri-agent-console/v1' && raw.protocol !== 'tauri-agent-coordinator/v1') throw new Error('Unsupported Fleet console protocol')
+        if (alive) { setFleet(normalize(raw)); setError(undefined); setAuthorizationRequired(false) }
       } catch (cause) {
         if (alive) setError(cause instanceof Error ? cause.message : 'Fleet is unreachable')
       } finally {
@@ -66,8 +114,11 @@ function useFleet(): { fleet: Fleet | undefined; error: string | undefined } {
     }
     void update()
     return () => { alive = false; clearTimeout(timer) }
-  }, [])
-  return { fleet, error }
+  }, [token])
+  return {
+    fleet, error, authorizationRequired,
+    setToken(value) { sessionStorage.setItem('fleet-coordinator-token', value); updateToken(value) }
+  }
 }
 
 function duration(milliseconds: number): string {
@@ -119,7 +170,7 @@ function FailureScreen({ path }: { path: string }) {
 }
 
 function Screen({ instance }: { instance: Instance }) {
-  const failure = instance.run?.failure && instance.run.artifacts.screenshot
+  const failure = !instance.remote && instance.run?.failure && instance.run.artifacts.screenshot
   return <div className="screen-frame">
     {instance.vnc.available && instance.vnc.websocket
       ? <Vnc path={instance.vnc.websocket} />
@@ -134,9 +185,20 @@ function Screen({ instance }: { instance: Instance }) {
 }
 
 function ArtifactLinks({ artifacts }: { artifacts: Record<string, string> }) {
-  const visible = ['run', 'actions', 'usage', 'semantic', 'replay', 'console', 'network', 'ipc']
+  const visible = ['run', 'actions', 'usage', 'semantic', 'replay', 'console', 'network', 'ipc', 'screenshot']
+  const open = async (event: MouseEvent<HTMLAnchorElement>, path: string) => {
+    const token = sessionStorage.getItem('fleet-coordinator-token')
+    if (!token) return
+    event.preventDefault()
+    const response = await fetch(path, { headers: { authorization: `Bearer ${token}` } })
+    if (!response.ok) return
+    const url = URL.createObjectURL(await response.blob())
+    const link = document.createElement('a')
+    link.href = url; link.download = path.split('/').pop() ?? 'artifact'; link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
   return <nav className="artifacts" aria-label="Run artifacts">
-    {visible.map((name) => artifacts[name] && <a key={name} href={artifacts[name]}>{name}</a>)}
+    {visible.map((name) => artifacts[name] && <a key={name} href={artifacts[name]} onClick={(event) => void open(event, artifacts[name]!)}>{name}</a>)}
   </nav>
 }
 
@@ -161,7 +223,7 @@ function InstanceCard({ instance }: { instance: Instance }) {
       </div> : <p className="objective muted">{instance.state === 'failed' ? 'Instance did not become ready.' : 'Ready for direct inspection and control through the application agent.'}</p>}
       <dl className="facts">
         <div><dt>Agent</dt><dd><span aria-hidden="true" className={`health ${instance.agent.healthy ? 'online' : ''}`} />{agent}</dd></div>
-        <div><dt>Display</dt><dd>{instance.display}</dd></div>
+        <div><dt>{instance.remote ? 'Worker' : 'Display'}</dt><dd>{instance.display}</dd></div>
         <div><dt>Commit</dt><dd title={instance.revision.commit}>{instance.revision.commit.slice(0, 10)}</dd></div>
         <div><dt>Cost</dt><dd>{run?.cost === undefined ? '—' : `$${run.cost.toFixed(4)}`}</dd></div>
       </dl>
@@ -176,7 +238,8 @@ function Metric({ label, value, tone }: { label: string; value: string | number;
 }
 
 function App() {
-  const { fleet, error } = useFleet()
+  const { fleet, error, authorizationRequired, setToken } = useFleet()
+  const [token, setTokenInput] = useState('')
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [runtime, setRuntime] = useState<'all' | 'wry' | 'cef'>('all')
@@ -186,6 +249,11 @@ function App() {
     return text.includes(query.toLowerCase()) && stateMatch && (runtime === 'all' || instance.runtime === runtime)
   }), [fleet, query, filter, runtime])
   const syncAge = fleet ? Math.max(0, Date.now() - Date.parse(fleet.generatedAt)) : 0
+
+  if (authorizationRequired && !fleet) return <main className="shell"><div className="empty-state">
+    <h2>Coordinator authentication</h2><p>Enter the bearer token for this browser tab.</p>
+    <form onSubmit={(event) => { event.preventDefault(); setToken(token) }}><input type="password" value={token} onChange={(event) => setTokenInput(event.target.value)} autoFocus /><button type="submit">Connect</button></form>
+  </div></main>
 
   return <main className="shell">
     <header className="masthead">
@@ -208,7 +276,7 @@ function App() {
     <section className="controls" aria-label="Fleet filters">
       <label className="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m16 16 5 5" /></svg><span className="sr-only">Search instances</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search suite, branch, instance…" /></label>
       <div className="filter-pills" role="group" aria-label="Filter by state">
-        {(['all', 'live', 'running', 'passed', 'failed', 'stopped'] as Filter[]).map((name) => <button key={name} aria-pressed={filter === name} className={filter === name ? 'selected' : ''} onClick={() => setFilter(name)}>{name}</button>)}
+        {(['all', 'live', 'queued', 'running', 'passed', 'failed', 'stopped'] as Filter[]).map((name) => <button key={name} aria-pressed={filter === name} className={filter === name ? 'selected' : ''} onClick={() => setFilter(name)}>{name}</button>)}
       </div>
       <label className="runtime-filter"><span>Runtime</span><select value={runtime} onChange={(event) => setRuntime(event.target.value as typeof runtime)}><option value="all">All</option><option value="wry">Wry</option><option value="cef">CEF</option></select></label>
     </section>

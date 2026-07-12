@@ -49,6 +49,7 @@ AI providers.
 - [Implementation plan](docs/implementation-plan.md)
 - [Ducktape migration](docs/ducktape-migration.md)
 - [Token budget](docs/token-budget.md)
+- [Horizontal scaling](docs/horizontal-scaling.md)
 
 ## Initial scope
 
@@ -135,9 +136,9 @@ runs. Every named runtime must provide its build command.
 
 ## Suites and runner
 
-Suites are JSON and contain only deterministic assertions. The model may choose
+Suites are JSON or TOON and contain only deterministic assertions. The model may choose
 typed UI actions; it cannot execute JavaScript or shell commands.
-Save each suite as `.tauri-agent/suites/<id>.json` and invoke it by ID.
+Save each suite as `.tauri-agent/suites/<id>.json` or `<id>.toon` and invoke it by ID.
 
 ```json
 {
@@ -199,11 +200,45 @@ lifecycle failure evidence. VNC and artifact routes also live below `/api/v1`;
 internal process, port, directory, endpoint, and cache records are never part of
 the console protocol.
 
+## Horizontal workers
+
+Horizontal mode adds an authenticated coordinator queue without moving builds,
+application processes, plugin endpoints, displays, or model sessions off their
+workers. Submissions must name a clean commit that already exists in every
+worker checkout.
+
+```bash
+export FLEET_COORDINATOR_TOKEN="$(openssl rand -hex 32)"
+
+# Coordinator host
+tauri-agent-fleet coordinator --host 127.0.0.1 --port 4180 --max-active 12
+
+# Submitter
+tauri-agent-fleet submit smoke-wry smoke-cef --coordinator http://coordinator:4180
+
+# Any number of worker hosts
+tauri-agent-fleet worker --coordinator http://coordinator:4180 --id worker-a --jobs 3
+tauri-agent-fleet worker --coordinator http://coordinator:4180 --id worker-b --jobs 3
+
+tauri-agent-fleet remote-status --coordinator http://coordinator:4180
+```
+
+The coordinator dashboard is served at its root. Its browser prompt keeps the
+bearer token in tab-scoped session storage. All coordinator API and artifact
+requests require that token. Horizontal v1 does not provide TLS or remote VNC;
+use a private network or authenticated tunnel and do not expose the service
+directly to the internet.
+
+Workers build once per revision/runtime in their private cache. Set the same
+absolute `FLEET_ARTIFACT_CACHE` path on workers that share a filesystem to build
+once across those hosts as well. Publication uses a renewable owner lease and
+an atomic immutable directory install.
+
 ## Explicit non-goals
 
 - A Maestro-compatible DSL
 - A cloud execution service
-- Kubernetes or distributed scheduling
+- Kubernetes-native scheduling or autoscaling
 - Native Appium-style controls
 - Reimplementing Chrome DevTools Protocol
 - Unbounded parallel execution

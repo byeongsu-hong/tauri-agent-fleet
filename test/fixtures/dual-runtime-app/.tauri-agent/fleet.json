@@ -4,6 +4,9 @@
     "id": "dev.byeongsu.tauri-agent-fleet.runtime-fixture",
     "root": "test/fixtures/dual-runtime-app"
   },
+  "lifecycle": {
+    "prepareBuild": ["bun", "install", "--frozen-lockfile"]
+  },
   "runtimes": {
     "default": "wry",
     "wry": { "build": ["bash", "build.sh"] },
