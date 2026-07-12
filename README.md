@@ -136,9 +136,9 @@ runs. Every named runtime must provide its build command.
 
 ## Suites and runner
 
-Suites are JSON and contain only deterministic assertions. The model may choose
+Suites are JSON or TOON and contain only deterministic assertions. The model may choose
 typed UI actions; it cannot execute JavaScript or shell commands.
-Save each suite as `.tauri-agent/suites/<id>.json` and invoke it by ID.
+Save each suite as `.tauri-agent/suites/<id>.json` or `<id>.toon` and invoke it by ID.
 
 ```json
 {

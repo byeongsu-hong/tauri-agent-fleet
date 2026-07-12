@@ -12,8 +12,8 @@ deepEqual(decodeInstruction(encodeInstruction(value)), value)
 ```
 
 For text-to-text conversion, use `jsonToInstruction(json)` and
-`instructionToJson(toon)`. Fleet keeps config, suite, protocol, and artifact
-files as JSON; only the model boundary uses TOON.
+`instructionToJson(toon)`. Fleet accepts authored suites as JSON or TOON;
+config, protocol, and artifact files remain JSON. Runner turns use TOON.
 
 ## Turn input
 

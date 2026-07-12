@@ -108,6 +108,9 @@ describe('trust-boundary schemas', () => {
     await writeFile(join(root, '.tauri-agent', 'suites', 'wrong.json'), JSON.stringify({
       protocol: 'tauri-agent-suite/v1', id: 'different', objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], budget: { steps: 1, seconds: 1 }
     }))
+    await writeFile(join(root, '.tauri-agent', 'suites', 'toon.toon'), encodeInstruction({
+      protocol: 'tauri-agent-suite/v1', id: 'toon', objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], budget: { steps: 1, seconds: 1 }
+    }))
     const previous = process.cwd()
     try {
       process.chdir(join(root, 'app', 'nested'))
@@ -116,6 +119,7 @@ describe('trust-boundary schemas', () => {
       expect(loaded.workspace).toBe(root)
       expect(stateRoot(loaded.path)).toContain(join('tauri-agent-fleet', ''))
       expect((await loadSuite(loaded.workspace, 'save')).id).toBe('save')
+      expect((await loadSuite(loaded.workspace, 'toon')).id).toBe('toon')
       await expect(loadSuite(loaded.workspace, '../save')).rejects.toThrow('invalid suite ID')
       await expect(loadSuite(loaded.workspace, 'wrong')).rejects.toThrow('declares ID different')
     } finally { process.chdir(previous) }

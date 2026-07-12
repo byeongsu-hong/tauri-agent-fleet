@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import type { FleetConfig, InstanceRecord, Suite } from './types.ts'
 import { parseConfig, parseSuite } from './schema.ts'
+import { decodeInstruction } from './instruction.ts'
 
 async function readJson(path: string): Promise<unknown> {
   try { return JSON.parse(await readFile(path, 'utf8')) } catch (error) {
@@ -41,8 +42,18 @@ export async function loadConfig(path?: string): Promise<{ config: FleetConfig; 
 
 export async function loadSuite(workspace: string, id: string): Promise<Suite> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) throw new Error(`invalid suite ID: ${id}`)
-  const suite = parseSuite(await readJson(join(workspace, '.tauri-agent', 'suites', `${id}.json`)))
-  if (suite.id !== id) throw new Error(`suite file ${id}.json declares ID ${suite.id}`)
+  const directory = join(workspace, '.tauri-agent', 'suites')
+  let value: unknown
+  let extension = 'json'
+  try { value = await readJson(join(directory, `${id}.json`)) } catch (error) {
+    if ((error as Error & { cause?: NodeJS.ErrnoException }).cause?.code !== 'ENOENT') throw error
+    extension = 'toon'
+    try { value = decodeInstruction(await readFile(join(directory, `${id}.toon`), 'utf8')) } catch (cause) {
+      throw new Error(`could not read TOON suite ${id}.toon: ${cause instanceof Error ? cause.message : cause}`, { cause })
+    }
+  }
+  const suite = parseSuite(value)
+  if (suite.id !== id) throw new Error(`suite file ${id}.${extension} declares ID ${suite.id}`)
   return suite
 }
 
