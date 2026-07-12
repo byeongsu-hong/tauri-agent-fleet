@@ -41,12 +41,21 @@ function safeId(value: string): string {
   return slug || 'instance'
 }
 
-async function nextAllocation(root: string): Promise<{ slot: number; vncPort: number; appPort: number }> {
+function usesVirtualDisplay(platform: NodeJS.Platform): boolean {
+  return platform !== 'darwin'
+}
+
+function requiredProcesses(instance: InstanceRecord): Array<InstanceRecord['processes'][number]['name']> {
+  return instance.display === 'native' ? ['app'] : ['xvfb', 'vnc', 'app']
+}
+
+async function nextAllocation(root: string, virtualDisplay: boolean): Promise<{ slot: number; vncPort: number; appPort: number }> {
   const active = (await listInstances(root)).filter((item) => ACTIVE.has(item.state))
   const used = new Set(active.map((item) => item.slot))
   let slot = 0
-  while (used.has(slot) || await displayExists(90 + slot)) slot++
-  const ports = new Set(active.flatMap((item) => [item.vncPort, item.appPort]))
+  while (used.has(slot) || (virtualDisplay && await displayExists(90 + slot))) slot++
+  const ports = new Set(active.flatMap((item) => [item.vncPort, item.appPort]).filter((port) => port > 0))
+  if (!virtualDisplay) return { slot, vncPort: 0, appPort: await freePort(ports) }
   const vncPort = await freePort(ports)
   ports.add(vncPort)
   return { slot, vncPort, appPort: await freePort(ports) }
@@ -62,10 +71,12 @@ export async function createInstance(
   revision: Revision,
   variant: RuntimeVariant,
   artifact: Artifact,
-  requestedId?: string
+  requestedId?: string,
+  platform: NodeJS.Platform = process.platform
 ): Promise<InstanceRecord> {
+  const virtualDisplay = usesVirtualDisplay(platform)
   const instance = await withLock(join(root, '.instance-allocation.lock'), async () => {
-    const { slot, vncPort, appPort } = await nextAllocation(root)
+    const { slot, vncPort, appPort } = await nextAllocation(root, virtualDisplay)
     const id = `${safeId(requestedId ?? revision.branch ?? basename(revision.worktree))}-${randomBytes(4).toString('hex')}`
     const base = join(root, 'instances', id)
     const directories = {
@@ -87,10 +98,10 @@ export async function createInstance(
       createdAt: now,
       updatedAt: now,
       slot,
-      display: `:${90 + slot}`,
+      display: virtualDisplay ? `:${90 + slot}` : 'native',
       vncPort,
       appPort,
-      vncToken: randomBytes(24).toString('base64url'),
+      vncToken: virtualDisplay ? randomBytes(24).toString('base64url') : '',
       directories,
       processes: []
     }
@@ -103,53 +114,58 @@ export async function createInstance(
   try {
     const project = await resolveInsideWorktree(revision.worktree, config.application.root)
     if (config.lifecycle?.prepareInstance) await runCommand(config.lifecycle.prepareInstance, { cwd: project, env })
-    const displayNumber = instance.display.slice(1)
-    const xvfb = process.env.FLEET_XVFB_COMMAND ?? 'Xvfb'
-    instance.processes.push(await spawnOwned('xvfb', [xvfb, instance.display, '-screen', '0', '1440x900x24', '-nolisten', 'tcp', '-noreset', '-ac'], {
-      env, log: join(base, 'xvfb.log')
-    }))
-    await saveInstance(root, instance)
-    await waitFor(async () => {
-      if (!await processOwned(instance.processes[0]!)) return false
-      try { await access(`/tmp/.X11-unix/X${displayNumber}`); return true } catch { return false }
-    }, 30_000, `X display ${instance.display}`)
-    const vnc = process.env.FLEET_VNC_COMMAND ?? 'x11vnc'
-    instance.processes.push(await spawnOwned('vnc', [vnc, '-display', instance.display, '-rfbport', String(instance.vncPort), '-localhost', '-forever', '-shared', '-nopw'], {
-      env, log: join(base, 'vnc.log')
-    }))
-    await saveInstance(root, instance)
-    await waitFor(async () => await processOwned(instance.processes[1]!) && await portOpen(instance.vncPort), 30_000, `VNC port ${instance.vncPort}`)
+    if (virtualDisplay) {
+      const displayNumber = instance.display.slice(1)
+      const xvfb = process.env.FLEET_XVFB_COMMAND ?? 'Xvfb'
+      instance.processes.push(await spawnOwned('xvfb', [xvfb, instance.display, '-screen', '0', '1440x900x24', '-nolisten', 'tcp', '-noreset', '-ac'], {
+        env, log: join(base, 'xvfb.log')
+      }))
+      await saveInstance(root, instance)
+      await waitFor(async () => {
+        if (!await processOwned(instance.processes[0]!)) return false
+        try { await access(`/tmp/.X11-unix/X${displayNumber}`); return true } catch { return false }
+      }, 30_000, `X display ${instance.display}`)
+      const vnc = process.env.FLEET_VNC_COMMAND ?? 'x11vnc'
+      instance.processes.push(await spawnOwned('vnc', [vnc, '-display', instance.display, '-rfbport', String(instance.vncPort), '-localhost', '-forever', '-shared', '-nopw'], {
+        env, log: join(base, 'vnc.log')
+      }))
+      await saveInstance(root, instance)
+      const vncProcess = instance.processes.find((item) => item.name === 'vnc')!
+      await waitFor(async () => await processOwned(vncProcess) && await portOpen(instance.vncPort), 30_000, `VNC port ${instance.vncPort}`)
+    }
     const executable = resolve(artifact.dir, artifact.manifest.executable)
-    const appEnv = { ...env }
+    const appEnv: NodeJS.ProcessEnv = {
+      ...env,
+      ...artifact.manifest.env,
+      HOME: env.HOME,
+      XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR,
+      XDG_DATA_HOME: env.XDG_DATA_HOME,
+      XDG_STATE_HOME: env.XDG_STATE_HOME,
+      XDG_CONFIG_HOME: env.XDG_CONFIG_HOME,
+      XDG_CACHE_HOME: env.XDG_CACHE_HOME,
+      FLEET_REVISION: env.FLEET_REVISION,
+      FLEET_RUNTIME: env.FLEET_RUNTIME,
+      FLEET_INSTANCE_ID: env.FLEET_INSTANCE_ID,
+      FLEET_HOME: env.FLEET_HOME,
+      FLEET_RUNTIME_DIR: env.FLEET_RUNTIME_DIR,
+      FLEET_DISPLAY: env.FLEET_DISPLAY,
+      FLEET_APP_PORT: env.FLEET_APP_PORT,
+      FLEET_APP_DATA: env.FLEET_APP_DATA,
+      FLEET_VNC_PORT: env.FLEET_VNC_PORT,
+      FLEET_ARTIFACT_DIR: env.FLEET_ARTIFACT_DIR,
+      FLEET_ARTIFACT_MANIFEST: env.FLEET_ARTIFACT_MANIFEST
+    }
     delete appEnv.FLEET_STATE_DIR
+    if (virtualDisplay) appEnv.DISPLAY = env.DISPLAY
+    else delete appEnv.DISPLAY
     instance.processes.push(await spawnOwned('app', [executable, ...(artifact.manifest.args ?? [])], {
       cwd: resolve(artifact.dir, artifact.manifest.cwd ?? '.'),
-      env: {
-        ...appEnv,
-        ...artifact.manifest.env,
-        HOME: env.HOME,
-        XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR,
-        XDG_DATA_HOME: env.XDG_DATA_HOME,
-        XDG_STATE_HOME: env.XDG_STATE_HOME,
-        XDG_CONFIG_HOME: env.XDG_CONFIG_HOME,
-        XDG_CACHE_HOME: env.XDG_CACHE_HOME,
-        DISPLAY: env.DISPLAY,
-        FLEET_REVISION: env.FLEET_REVISION,
-        FLEET_RUNTIME: env.FLEET_RUNTIME,
-        FLEET_INSTANCE_ID: env.FLEET_INSTANCE_ID,
-        FLEET_HOME: env.FLEET_HOME,
-        FLEET_RUNTIME_DIR: env.FLEET_RUNTIME_DIR,
-        FLEET_DISPLAY: env.FLEET_DISPLAY,
-        FLEET_APP_PORT: env.FLEET_APP_PORT,
-        FLEET_APP_DATA: env.FLEET_APP_DATA,
-        FLEET_VNC_PORT: env.FLEET_VNC_PORT,
-        FLEET_ARTIFACT_DIR: env.FLEET_ARTIFACT_DIR,
-        FLEET_ARTIFACT_MANIFEST: env.FLEET_ARTIFACT_MANIFEST
-      },
+      env: appEnv,
       log: join(base, 'app.log')
     }))
     await saveInstance(root, instance)
-    const attached = await attachAgent(config.application.id, directories.runtime, instance.processes[2]!)
+    const app = instance.processes.find((item) => item.name === 'app')!
+    const attached = await attachAgent(config.application.id, directories.runtime, app)
     instance.endpoint = { healthy: true, capabilities: attached.capabilities }
     instance.state = 'ready'
     await saveInstance(root, instance)
@@ -172,20 +188,21 @@ function instanceEnvironment(root: string, instance: InstanceRecord, artifactDir
     XDG_STATE_HOME: join(directories.home, '.local', 'state'),
     XDG_CONFIG_HOME: join(directories.home, '.config'),
     XDG_CACHE_HOME: join(directories.home, '.cache'),
-    DISPLAY: instance.display,
     FLEET_REVISION: instance.revision.commit,
     FLEET_RUNTIME: instance.variant,
     FLEET_INSTANCE_ID: instance.id,
     FLEET_STATE_DIR: root,
     FLEET_HOME: directories.home,
     FLEET_RUNTIME_DIR: directories.runtime,
-    FLEET_DISPLAY: instance.display,
+    FLEET_DISPLAY: instance.display === 'native' ? '' : instance.display,
     FLEET_APP_PORT: String(instance.appPort),
     FLEET_APP_DATA: directories.data,
-    FLEET_VNC_PORT: String(instance.vncPort),
+    FLEET_VNC_PORT: instance.vncPort > 0 ? String(instance.vncPort) : '',
     FLEET_ARTIFACT_DIR: artifactDir,
     FLEET_ARTIFACT_MANIFEST: join(artifactDir, 'manifest.json')
   }
+  if (instance.display === 'native') delete env.DISPLAY
+  else env.DISPLAY = instance.display
   delete env.OPENAI_API_KEY
   delete env.ANTHROPIC_API_KEY
   delete env.CLAUDE_CODE_OAUTH_TOKEN
@@ -224,7 +241,7 @@ export async function stopInstance(config: FleetConfig, root: string, instance: 
 export async function refreshInstance(config: FleetConfig, root: string, instance: InstanceRecord, persist = true): Promise<InstanceRecord> {
   if (ACTIVE.has(instance.state)) {
     const staleBoot = instance.state === 'booting' && Date.now() - Date.parse(instance.updatedAt) > 60_000
-    const complete = ['xvfb', 'vnc', 'app'].every((name) => instance.processes.some((process) => process.name === name))
+    const complete = requiredProcesses(instance).every((name) => instance.processes.some((process) => process.name === name))
     if (!complete && (staleBoot || instance.state !== 'booting')) {
       await failInstance(config, root, instance, { class: 'infrastructure_failure', message: 'instance process set is incomplete' }, persist)
       return instance

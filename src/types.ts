@@ -69,6 +69,8 @@ export interface ProcessRecord {
   pid: number
   pgid: number
   startTime: string
+  identitySource?: 'linux-proc' | 'darwin-libproc'
+  executable?: string
   command: string[]
 }
 

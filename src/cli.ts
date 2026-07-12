@@ -160,7 +160,8 @@ async function main(): Promise<number> {
       const revision = await discoverRevision(repository, selector, root)
       const artifact = await buildArtifact(loaded.config, root, revision, selectedVariant)
       const instance = await createInstance(loaded.config, root, revision, selectedVariant, artifact, id)
-      console.log(`${instance.id}\t${instance.state}\t${instance.display}\tVNC ${instance.vncPort}`)
+      const view = instance.processes.some((process) => process.name === 'vnc') ? `VNC ${instance.vncPort}` : 'VNC unavailable'
+      console.log(`${instance.id}\t${instance.state}\t${instance.display}\t${view}`)
     }
     return 0
   }
