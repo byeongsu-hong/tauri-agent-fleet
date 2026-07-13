@@ -968,3 +968,33 @@ test('app timeouts, invalid usage, and repeated model actions have distinct fail
   expect(runnerResult.run?.failure).toBe('runner_failure')
   expect(await readFile(join(runnerResult.directories.artifacts, runnerResult.run!.id, 'failure.png'))).not.toHaveLength(0)
 })
+
+test('artifacts share identical large files through the content store', async () => {
+  const base = await temporary()
+  const root = join(base, 'state', 'identity')
+  const build = ['bash', '-c', [
+    'mkdir -p "$FLEET_ARTIFACT_DIR/bin"',
+    'printf "#!/bin/sh\\nexit 0\\n" > "$FLEET_ARTIFACT_DIR/bin/app"',
+    'chmod +x "$FLEET_ARTIFACT_DIR/bin/app"',
+    'head -c 2097152 /dev/zero > "$FLEET_ARTIFACT_DIR/bin/blob"',
+    'printf \'{"protocol":"tauri-agent-artifact/v1","executable":"bin/app"}\' > "$FLEET_ARTIFACT_MANIFEST"'
+  ].join('; ')]
+  const config: FleetConfig = {
+    protocol: 'tauri-agent-fleet/v1',
+    application: { id: 'com.example.app', root: '.' },
+    runtimes: { default: 'wry', wry: { build } }
+  }
+  const revision = (commit: string) => ({
+    repository: 'a'.repeat(64), commit, dirtyFingerprint: CLEAN_FINGERPRINT, worktree: base
+  })
+  const first = await buildArtifact(config, root, revision('b'.repeat(40)), 'wry')
+  const second = await buildArtifact(config, root, revision('c'.repeat(40)), 'wry')
+  expect(first.dir).not.toBe(second.dir)
+  const [one, two] = await Promise.all([
+    stat(join(first.dir, 'bin', 'blob')),
+    stat(join(second.dir, 'bin', 'blob'))
+  ])
+  expect(one.ino).toBe(two.ino)
+  expect(one.nlink).toBe(3)
+  expect((await stat(join(first.dir, 'bin', 'app'))).nlink).toBe(1)
+})
