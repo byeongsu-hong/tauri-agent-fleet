@@ -1,6 +1,7 @@
-import { access, lstat, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
+import { access, link, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { createHash } from 'node:crypto'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { runCommand } from './command.ts'
 import { artifactKey, CLEAN_FINGERPRINT, resolveInsideWorktree } from './revision.ts'
 import { parseArtifactManifest } from './schema.ts'
@@ -32,6 +33,50 @@ async function validArtifact(dir: string, containerRoot: string): Promise<Artifa
     await access(executable, constants.X_OK)
     return manifest
   } catch { return undefined }
+}
+
+const DEDUPE_MIN_BYTES = 1 << 20
+
+async function fileDigest(path: string): Promise<string> {
+  const hash = createHash('sha256')
+  for await (const chunk of Bun.file(path).stream()) hash.update(chunk)
+  return hash.digest('hex')
+}
+
+// Hardlinks large artifact files into a content store shared by every state
+// root, so identical payloads (CEF binaries, resources) exist once on disk.
+// Store entries are trusted by name: artifacts are immutable once installed.
+export async function dedupeArtifact(store: string, dir: string): Promise<void> {
+  let stored = false
+  for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue
+    const path = join(entry.parentPath, entry.name)
+    const info = await lstat(path)
+    if (info.size < DEDUPE_MIN_BYTES || info.nlink > 1) continue
+    if (!stored) { await mkdir(store, { recursive: true, mode: 0o700 }); stored = true }
+    const target = join(store, await fileDigest(path))
+    while (true) {
+      try { await link(path, target); break } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      }
+      try {
+        const existing = await lstat(target)
+        if (existing.size !== info.size || existing.mode !== info.mode) break
+        const staged = `${path}.dedupe.tmp`
+        await rm(staged, { force: true })
+        await link(target, staged)
+        await rename(staged, path)
+        break
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
+  }
+  let names: string[]
+  try { names = await readdir(store) } catch { return }
+  for (const name of names) {
+    try { if ((await lstat(join(store, name))).nlink === 1) await rm(join(store, name), { force: true }) } catch {}
+  }
 }
 
 export async function buildArtifact(
@@ -94,6 +139,9 @@ export async function buildArtifact(
       if (!installed) {
         await rm(dir, { recursive: true, force: true })
         throw new Error(`artifact became invalid after installation: ${dir}`)
+      }
+      try { await dedupeArtifact(shared ? join(containerRoot, '.cas') : join(dirname(root), 'cas'), dir) } catch (error) {
+        console.warn(`artifact dedupe skipped: ${error instanceof Error ? error.message : error}`)
       }
       return { key, dir, manifest: installed }
     } finally { await rm(staging, { recursive: true, force: true }) }
