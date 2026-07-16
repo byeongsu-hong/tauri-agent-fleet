@@ -12,16 +12,11 @@ runner, and exposes every live screen and run state in one dashboard.
 
 ## Status
 
-Fleet is runnable on Linux/X11. It provides the generic CLI, build cache,
-isolated process lifecycle, bounded suite scheduler, deterministic runner,
-artifacts, and read-only noVNC dashboard. Ducktape completed its product-owned
-cutover in [orthory/ducktape#419](https://github.com/orthory/ducktape/pull/419)
-and now retains only its Fleet config, hooks, and suites.
-
-Extraction baselines:
-
-- Ducktape: `0f2e40c18bfe37e6ef77840d6b10b2d287bd6fe9`
-- tauri-agent-plugin: `fc773cc18e85ac4deef0c450736af323d841b9f7`
+Fleet runs on Linux/X11 and native macOS. It provides the generic CLI, build
+cache, isolated process lifecycle, bounded suite scheduler, deterministic
+runner, artifacts, a read-only noVNC dashboard, and an authenticated horizontal
+coordinator. The bundled Tauri driver is the first driver; an iced driver is
+future work against the [driver contract](docs/driver-contract.md).
 
 ## Ownership boundary
 
