@@ -1,4 +1,12 @@
-export type RuntimeVariant = 'wry' | 'cef'
+// A runtime is a build variant named by config (wry, cef, native, …). Fleet no
+// longer hardcodes the set; each runtime names the driver that drives it.
+export type RuntimeVariant = string
+
+export interface RuntimeDefinition {
+  driver: string
+  build: string[]
+}
+
 export type LifecycleState =
   | 'booting'
   | 'ready'
@@ -10,18 +18,18 @@ export type LifecycleState =
 export type FailureClass = 'app_failure' | 'runner_failure' | 'infrastructure_failure'
 
 export interface FleetConfig {
-  protocol: 'tauri-agent-fleet/v1'
+  protocol: 'agent-fleet/v1'
   application: { id: string; root: string }
   lifecycle?: {
     prepareBuild?: string[]
     prepareInstance?: string[]
     cleanupInstance?: string[]
   }
-  runtimes: Partial<Record<RuntimeVariant, { build: string[] }>> & { default: RuntimeVariant }
+  runtimes: { [name: string]: string | RuntimeDefinition; default: string }
 }
 
 export interface ArtifactManifest {
-  protocol: 'tauri-agent-artifact/v1'
+  protocol: 'agent-artifact/v1'
   executable: string
   args?: string[]
   cwd?: string
@@ -44,11 +52,11 @@ export type RunnerAction =
 
 export type SuccessCondition =
   | { state: { key: string; equals: unknown } }
-  | { ipc: { command: string; ok?: boolean } }
+  | { event: { name: string; ok?: boolean } }
   | { expect: Locator & { present?: boolean; value?: string; hasState?: string } }
 
 export interface Suite {
-  protocol: 'tauri-agent-suite/v1'
+  protocol: 'agent-suite/v1'
   id: string
   runtime?: RuntimeVariant
   objective: string

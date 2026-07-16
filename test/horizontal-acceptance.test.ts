@@ -10,15 +10,15 @@ import type { FleetConfig, InstanceRecord, Revision, RuntimeVariant } from '../s
 
 const token = 'horizontal-acceptance-token-'.padEnd(40, 'x')
 const config: FleetConfig = {
-  protocol: 'tauri-agent-fleet/v1', application: { id: 'acceptance', root: '.' },
-  runtimes: { default: 'wry', wry: { build: ['true'] }, cef: { build: ['true'] } }
+  protocol: 'agent-fleet/v1', application: { id: 'acceptance', root: '.' },
+  runtimes: { default: 'wry', wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['true'] }, cef: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['true'] } }
 }
 
 function input(index: number, runtime: RuntimeVariant) {
   return {
     protocol: COORDINATOR_PROTOCOL, repository: 'a'.repeat(64), commit: 'b'.repeat(40), runtime,
     suite: {
-      protocol: 'tauri-agent-suite/v1', id: `smoke-${index}`, objective: `Pass smoke ${index}`,
+      protocol: 'agent-suite/v1', id: `smoke-${index}`, objective: `Pass smoke ${index}`,
       pass: [{ expect: { role: 'button', name: 'Ready' } }], budget: { steps: 2, seconds: 10, tokens: 100 }
     }
   }

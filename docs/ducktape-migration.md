@@ -93,8 +93,8 @@ Do not preserve these behaviors during extraction:
 Ducktape should retain only:
 
 ```text
-.tauri-agent/fleet.json
-.tauri-agent/suites/*.json
+.agent/fleet.json
+.agent/suites/*.json
 qa/fleet/prepare-build.sh
 qa/fleet/prepare-instance.sh
 qa/fleet/cleanup-instance.ts
@@ -131,7 +131,7 @@ ops/fleet-console/
 ```
 
 Update active QA/upgrade/callbed documentation to invoke the versioned
-`tauri-agent-fleet` CLI. Keep the PR based on Ducktape `dev`, review it from a
+`agent-fleet` CLI. Keep the PR based on Ducktape `dev`, review it from a
 clean context, and merge only when the Wry/CEF and isolation gates are green.
 
 ## Rollback

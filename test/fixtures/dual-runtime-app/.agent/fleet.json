@@ -1,5 +1,5 @@
 {
-  "protocol": "tauri-agent-fleet/v1",
+  "protocol": "agent-fleet/v1",
   "application": {
     "id": "dev.byeongsu.tauri-agent-fleet.runtime-fixture",
     "root": "test/fixtures/dual-runtime-app"
@@ -9,7 +9,7 @@
   },
   "runtimes": {
     "default": "wry",
-    "wry": { "build": ["bash", "build.sh"] },
-    "cef": { "build": ["bash", "build.sh"] }
+    "wry": { "driver": "@byeongsu-hong/agent-fleet/driver-tauri", "build": ["bash", "build.sh"] },
+    "cef": { "driver": "@byeongsu-hong/agent-fleet/driver-tauri", "build": ["bash", "build.sh"] }
   }
 }

@@ -39,7 +39,7 @@ it never contains source files, credentials, model transcripts, or shell code.
 
 ## Protocol
 
-All JSON messages use `tauri-agent-coordinator/v1`. Every `/api/v1` request
+All JSON messages use `agent-coordinator/v1`. Every `/api/v1` request
 requires `Authorization: Bearer <token>`. The token is operator-provided, at
 least 32 opaque characters, and is never persisted inside job or artifact
 records.
@@ -48,7 +48,7 @@ records.
 
 ```json
 {
-  "protocol": "tauri-agent-coordinator/v1",
+  "protocol": "agent-coordinator/v1",
   "id": "opaque-id",
   "repository": "sha256 repository identity",
   "commit": "40-character commit SHA",
@@ -120,7 +120,7 @@ model-usage.jsonl
 semantic.jsonl
 console.jsonl
 network.jsonl
-ipc.jsonl
+events.jsonl
 failure.png
 replay.json
 ```
@@ -154,10 +154,10 @@ than exposing worker ports.
 ## CLI
 
 ```text
-tauri-agent-fleet coordinator [--host HOST] [--port PORT] [--max-active N]
-tauri-agent-fleet submit <suite...> --coordinator URL [--revision REF]
-tauri-agent-fleet worker --coordinator URL --id ID [--jobs N] [--once]
-tauri-agent-fleet remote-status --coordinator URL [--json]
+agent-fleet coordinator [--host HOST] [--port PORT] [--max-active N]
+agent-fleet submit <suite...> --coordinator URL [--revision REF]
+agent-fleet worker --coordinator URL --id ID [--jobs N] [--once]
+agent-fleet remote-status --coordinator URL [--json]
 ```
 
 `FLEET_COORDINATOR_TOKEN` supplies authentication. CLI arguments do not accept

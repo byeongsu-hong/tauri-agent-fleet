@@ -14,7 +14,7 @@ a big-bang extraction.
 | Repository | Work |
 | --- | --- |
 | `tauri-agent-plugin` | Single-app protocol, atomic actions, cursors, capabilities, token reductions |
-| `tauri-agent-fleet` | Build cache, lifecycle, scheduler, runner, artifacts, dashboard |
+| `agent-fleet` | Build cache, lifecycle, scheduler, runner, artifacts, dashboard |
 | Ducktape | Fleet config, product hooks, QA suites, removal of the embedded Fleet |
 
 ## Phase 0: measurements and contracts
@@ -208,7 +208,7 @@ model-usage.jsonl
 tree.txt or semantic frames
 console.jsonl
 network.jsonl
-ipc.jsonl
+events.jsonl
 failure screenshot
 replay.json
 ```
@@ -247,7 +247,7 @@ after the observation-only dashboard is proven insufficient.
 Release order:
 
 1. compatible `tauri-agent-plugin` release;
-2. first versioned `tauri-agent-fleet` release;
+2. first versioned `agent-fleet` release;
 3. Ducktape pins both versions;
 4. Wry, CEF, same-artifact parallel, and teardown gates pass;
 5. Ducktape removal PR deletes the embedded Fleet;

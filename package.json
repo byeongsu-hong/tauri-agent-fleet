@@ -1,26 +1,30 @@
 {
-  "name": "@byeongsu-hong/tauri-agent-fleet",
+  "name": "@byeongsu-hong/agent-fleet",
   "version": "0.1.0",
-  "description": "Parallel, isolated QA orchestration for Tauri applications",
+  "description": "Parallel, isolated QA orchestration for native desktop apps via pluggable drivers",
   "type": "module",
   "packageManager": "bun@1.3.14",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/byeongsu-hong/tauri-agent-fleet.git"
+    "url": "git+https://github.com/byeongsu-hong/agent-fleet.git"
   },
-  "homepage": "https://github.com/byeongsu-hong/tauri-agent-fleet#readme",
-  "bugs": "https://github.com/byeongsu-hong/tauri-agent-fleet/issues",
+  "homepage": "https://github.com/byeongsu-hong/agent-fleet#readme",
+  "bugs": "https://github.com/byeongsu-hong/agent-fleet/issues",
   "publishConfig": { "access": "public" },
   "bin": {
-    "tauri-agent-fleet": "dist/cli.js"
+    "agent-fleet": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/cli.js",
+    "./driver-tauri": "./dist/drivers/tauri.js"
   },
   "files": ["dist", "README.md", "LICENSE-APACHE", "LICENSE-MIT"],
   "scripts": {
-    "build": "bun build src/cli.ts --target=bun --external '@byeongsu-hong/tauri-agent-plugin/*' --outdir=dist && vite build",
+    "build": "bun build src/cli.ts src/drivers/tauri.ts --target=bun --external '@byeongsu-hong/tauri-agent-plugin/*' --outdir=dist && vite build",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "test:e2e:runtimes": "bun run src/cli.ts test smoke smoke smoke --runtime wry --jobs 3 --config test/fixtures/dual-runtime-app/.tauri-agent/fleet.json && bun run src/cli.ts test smoke smoke smoke --runtime cef --jobs 3 --config test/fixtures/dual-runtime-app/.tauri-agent/fleet.json",
+    "test:e2e:runtimes": "bun run src/cli.ts test smoke smoke smoke --runtime wry --jobs 3 --config test/fixtures/dual-runtime-app/.agent/fleet.json && bun run src/cli.ts test smoke smoke smoke --runtime cef --jobs 3 --config test/fixtures/dual-runtime-app/.agent/fleet.json",
     "check": "bun run typecheck && bun test && bun run build",
     "prepare": "bun run build",
     "prepack": "bun run check"

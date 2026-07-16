@@ -7,17 +7,17 @@ import type { WorkerClient } from '../src/worker.ts'
 import { runWorker } from '../src/worker.ts'
 
 const config = {
-  protocol: 'tauri-agent-fleet/v1' as const,
+  protocol: 'agent-fleet/v1' as const,
   application: { id: 'test', root: '.' },
-  runtimes: { default: 'wry' as const, wry: { build: ['true'] } }
+  runtimes: { default: 'wry' as const, wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['true'] } }
 }
 
 test('worker drains several claims with bounded local parallelism and reports results', async () => {
   const root = await mkdtemp(join(tmpdir(), 'fleet-worker-'))
   const queue = Array.from({ length: 4 }, (_, index) => ({
     job: {
-      protocol: 'tauri-agent-coordinator/v1', id: `job-${index}`, repository: 'a'.repeat(64), commit: 'b'.repeat(40),
-      suite: { protocol: 'tauri-agent-suite/v1', id: `suite-${index}`, objective: 'pass', pass: [], budget: { steps: 1, seconds: 1 } },
+      protocol: 'agent-coordinator/v1', id: `job-${index}`, repository: 'a'.repeat(64), commit: 'b'.repeat(40),
+      suite: { protocol: 'agent-suite/v1', id: `suite-${index}`, objective: 'pass', pass: [], budget: { steps: 1, seconds: 1 } },
       runtime: 'wry', state: 'leased', attempt: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
     } satisfies PublicCoordinatorJob,
     leaseToken: `lease-${index}`
@@ -55,8 +55,8 @@ test('worker drains several claims with bounded local parallelism and reports re
 test('worker bounds infrastructure errors before terminal publication', async () => {
   const root = await mkdtemp(join(tmpdir(), 'fleet-worker-error-'))
   const job = {
-    protocol: 'tauri-agent-coordinator/v1', id: 'job-error', repository: 'a'.repeat(64), commit: 'b'.repeat(40),
-    suite: { protocol: 'tauri-agent-suite/v1', id: 'suite-error', objective: 'pass', pass: [], budget: { steps: 1, seconds: 1 } },
+    protocol: 'agent-coordinator/v1', id: 'job-error', repository: 'a'.repeat(64), commit: 'b'.repeat(40),
+    suite: { protocol: 'agent-suite/v1', id: 'suite-error', objective: 'pass', pass: [], budget: { steps: 1, seconds: 1 } },
     runtime: 'wry', state: 'leased', attempt: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   } satisfies PublicCoordinatorJob
   let result: unknown

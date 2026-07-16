@@ -72,7 +72,7 @@ async function artifactRoutes(stateRoot: string, instance: InstanceRecord): Prom
   const routes: Record<string, string> = {}
   for (const [name, file] of Object.entries({
     run: 'run.json', actions: 'actions.jsonl', usage: 'model-usage.jsonl', semantic: 'semantic.jsonl', replay: 'replay.json',
-    console: 'console.jsonl', network: 'network.jsonl', ipc: 'ipc.jsonl', screenshot: 'failure.png'
+    console: 'console.jsonl', network: 'network.jsonl', event: 'events.jsonl', screenshot: 'failure.png'
   })) if (files.includes(file)) routes[name] = `${root}/${file}`
   return routes
 }
@@ -82,7 +82,7 @@ async function fleetView(stateRoot: string, instances: InstanceRecord[], generat
   const tokens = instances.reduce((total, item) => total + (item.run?.inputTokens ?? 0) + (item.run?.outputTokens ?? 0), 0)
   const cost = instances.reduce((total, item) => total + (item.run?.cost ?? 0), 0)
   return {
-    protocol: 'tauri-agent-console/v1' as const,
+    protocol: 'agent-console/v1' as const,
     generatedAt,
     summary: {
       total: instances.length,

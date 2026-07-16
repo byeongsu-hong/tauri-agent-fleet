@@ -10,7 +10,7 @@ const job = {
   protocol: COORDINATOR_PROTOCOL,
   repository: 'a'.repeat(64), commit: 'b'.repeat(40), runtime: 'wry',
   suite: {
-    protocol: 'tauri-agent-suite/v1', id: 'smoke', objective: 'Pass',
+    protocol: 'agent-suite/v1', id: 'smoke', objective: 'Pass',
     pass: [{ expect: { role: 'button', name: 'Ready' } }], budget: { steps: 1, seconds: 10 }
   }
 }

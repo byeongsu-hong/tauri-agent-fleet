@@ -13,12 +13,13 @@ import {
 import { buildArtifact } from '../src/build.ts'
 import { runCommand } from '../src/command.ts'
 import { artifactKey, CLEAN_FINGERPRINT, dirtyFingerprint, discoverRevision, resolveInsideWorktree } from '../src/revision.ts'
-import { parseAction, parseArtifactManifest, parseConfig, parseSuite } from '../src/schema.ts'
+import { parseAction, parseArtifactManifest, parseConfig, parseSuite, runtimeDefinition } from '../src/schema.ts'
 import { processIdentity, processOwned, spawnOwned, terminateOwned, type ProcessIdentity } from '../src/process.ts'
 import { createInstance, refreshInstance, stopInstance } from '../src/instance.ts'
 import { atomicJson, listInstances, loadConfig, loadSuite, privateDir, saveInstance, stateRoot } from '../src/storage.ts'
 import { startDashboard } from '../src/server.ts'
-import { conditionMet, runSuite, type NextAction } from '../src/runner.ts'
+import { runSuite, type NextAction } from '../src/runner.ts'
+import { conditionMet, tauriDriver } from '../src/drivers/tauri.ts'
 import { defaultVariant, runSuites } from '../src/scheduler.ts'
 import { freePort, portOpen, waitFor } from '../src/network.ts'
 import { decodeInstruction, encodeInstruction, instructionToJson, jsonToInstruction } from '../src/instruction.ts'
@@ -29,7 +30,7 @@ const cleanups: Array<() => void | Promise<void>> = []
 afterEach(async () => { while (cleanups.length) await cleanups.pop()!() })
 
 async function temporary(): Promise<string> {
-  const path = await mkdtemp(join(tmpdir(), 'tauri-agent-fleet-'))
+  const path = await mkdtemp(join(tmpdir(), 'agent-fleet-'))
   cleanups.push(() => rm(path, { recursive: true, force: true }))
   return path
 }
@@ -44,9 +45,9 @@ test('TOON instructions round-trip the JSON data model and typed actions', () =>
 })
 
 const CONFIG: FleetConfig = {
-  protocol: 'tauri-agent-fleet/v1',
+  protocol: 'agent-fleet/v1',
   application: { id: 'com.example.app', root: '.' },
-  runtimes: { default: 'wry', wry: { build: ['true'] }, cef: { build: ['true'] } }
+  runtimes: { default: 'wry', wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['true'] }, cef: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['true'] } }
 }
 
 test('command output and execution time are bounded', async () => {
@@ -70,20 +71,20 @@ test('port allocation honors active exclusions', async () => {
 describe('trust-boundary schemas', () => {
   test('accepts v1 config and suites, rejects unsafe or unbounded input', () => {
     expect(parseConfig(CONFIG)).toEqual(CONFIG)
-    const cefOnly = parseConfig({ protocol: 'tauri-agent-fleet/v1', application: { id: 'com.example.cef', root: '.' }, runtimes: { default: 'cef', cef: { build: ['true'] } } })
+    const cefOnly = parseConfig({ protocol: 'agent-fleet/v1', application: { id: 'com.example.cef', root: '.' }, runtimes: { default: 'cef', cef: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['true'] } } })
     expect(cefOnly.runtimes.wry).toBeUndefined()
     expect(defaultVariant(cefOnly)).toBe('cef')
-    expect(() => parseConfig({ ...CONFIG, protocol: 'tauri-agent-fleet/v2' })).toThrow('protocol')
+    expect(() => parseConfig({ ...CONFIG, protocol: 'agent-fleet/v2' })).toThrow('protocol')
     expect(() => parseConfig({ ...CONFIG, application: { id: 'com.example.app', root: '../outside' } })).toThrow('inside the workspace')
-    expect(() => parseConfig({ ...CONFIG, runtimes: { default: 'wry', wry: { build: 'bun build' } } })).toThrow('string array')
-    expect(parseConfig({ ...CONFIG, runtimes: { default: 'wry', wry: { build: ['printf', ''] } } }).runtimes.wry?.build).toEqual(['printf', ''])
+    expect(() => parseConfig({ ...CONFIG, runtimes: { default: 'wry', wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: 'bun build' } } })).toThrow('string array')
+    expect(runtimeDefinition(parseConfig({ ...CONFIG, runtimes: { default: 'wry', wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['printf', ''] } } }), 'wry').build).toEqual(['printf', ''])
     expect(parseConfig({ ...CONFIG, lifecycle: { cleanupInstance: ['bash', 'cleanup.sh'] } }).lifecycle?.cleanupInstance).toEqual(['bash', 'cleanup.sh'])
-    expect(() => parseConfig({ ...CONFIG, runtimes: { default: 'wry', wry: { build: ['', 'arg'] } } })).toThrow('executable')
-    expect(() => parseConfig({ ...CONFIG, runtimes: { default: 'wry', wry: { build: ['  '] } } })).toThrow('executable')
-    expect(() => parseConfig({ ...CONFIG, runtimes: { default: 'wry', wry: { build: ['printf', '\0'] } } })).toThrow('string array')
-    expect(() => parseConfig({ ...CONFIG, runtimes: { default: 'cef', wry: { build: ['true'] } } })).toThrow('configured runtime')
+    expect(() => parseConfig({ ...CONFIG, runtimes: { default: 'wry', wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['', 'arg'] } } })).toThrow('executable')
+    expect(() => parseConfig({ ...CONFIG, runtimes: { default: 'wry', wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['  '] } } })).toThrow('executable')
+    expect(() => parseConfig({ ...CONFIG, runtimes: { default: 'wry', wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['printf', '\0'] } } })).toThrow('string array')
+    expect(() => parseConfig({ ...CONFIG, runtimes: { default: 'cef', wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['true'] } } })).toThrow('configured runtime')
     const suite = parseSuite({
-      protocol: 'tauri-agent-suite/v1', id: 'save', objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], budget: { steps: 5, seconds: 10 }
+      protocol: 'agent-suite/v1', id: 'save', objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], budget: { steps: 5, seconds: 10 }
     })
     expect(suite.runtime).toBeUndefined()
     expect(() => parseSuite({ ...suite, pass: [] })).toThrow('non-empty')
@@ -98,27 +99,27 @@ describe('trust-boundary schemas', () => {
 
   test('discovers hidden workspace config and resolves state from the workspace', async () => {
     const root = await temporary()
-    await mkdir(join(root, '.tauri-agent'))
+    await mkdir(join(root, '.agent'))
     await mkdir(join(root, 'app', 'nested'), { recursive: true })
-    await mkdir(join(root, '.tauri-agent', 'suites'))
-    await writeFile(join(root, '.tauri-agent', 'fleet.json'), JSON.stringify(CONFIG))
-    await writeFile(join(root, '.tauri-agent', 'suites', 'save.json'), JSON.stringify({
-      protocol: 'tauri-agent-suite/v1', id: 'save', objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], budget: { steps: 1, seconds: 1 }
+    await mkdir(join(root, '.agent', 'suites'))
+    await writeFile(join(root, '.agent', 'fleet.json'), JSON.stringify(CONFIG))
+    await writeFile(join(root, '.agent', 'suites', 'save.json'), JSON.stringify({
+      protocol: 'agent-suite/v1', id: 'save', objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], budget: { steps: 1, seconds: 1 }
     }))
-    await writeFile(join(root, '.tauri-agent', 'suites', 'wrong.json'), JSON.stringify({
-      protocol: 'tauri-agent-suite/v1', id: 'different', objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], budget: { steps: 1, seconds: 1 }
+    await writeFile(join(root, '.agent', 'suites', 'wrong.json'), JSON.stringify({
+      protocol: 'agent-suite/v1', id: 'different', objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], budget: { steps: 1, seconds: 1 }
     }))
-    await writeFile(join(root, '.tauri-agent', 'suites', 'toon.toon'), encodeInstruction({
-      protocol: 'tauri-agent-suite/v1', id: 'toon', objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], budget: { steps: 1, seconds: 1 }
+    await writeFile(join(root, '.agent', 'suites', 'toon.toon'), encodeInstruction({
+      protocol: 'agent-suite/v1', id: 'toon', objective: 'Save', pass: [{ state: { key: 'saved', equals: true } }], budget: { steps: 1, seconds: 1 }
     }))
     const previous = process.cwd()
     try {
       process.chdir(join(root, 'app', 'nested'))
       const loaded = await loadConfig()
       const canonicalRoot = await realpath(root)
-      expect(loaded.path).toBe(join(canonicalRoot, '.tauri-agent', 'fleet.json'))
+      expect(loaded.path).toBe(join(canonicalRoot, '.agent', 'fleet.json'))
       expect(loaded.workspace).toBe(canonicalRoot)
-      expect(stateRoot(loaded.path)).toContain(join('tauri-agent-fleet', ''))
+      expect(stateRoot(loaded.path)).toContain(join('agent-fleet', ''))
       expect((await loadSuite(loaded.workspace, 'save')).id).toBe('save')
       expect((await loadSuite(loaded.workspace, 'toon')).id).toBe('toon')
       await expect(loadSuite(loaded.workspace, '../save')).rejects.toThrow('invalid suite ID')
@@ -129,21 +130,21 @@ describe('trust-boundary schemas', () => {
   test('ignores a relative XDG state root', () => {
     const previous = process.env.XDG_STATE_HOME
     process.env.XDG_STATE_HOME = 'relative-state'
-    try { expect(stateRoot('/tmp/config').startsWith(join(homedir(), '.local', 'state', 'tauri-agent-fleet'))).toBe(true) } finally {
+    try { expect(stateRoot('/tmp/config').startsWith(join(homedir(), '.local', 'state', 'agent-fleet'))).toBe(true) } finally {
       if (previous === undefined) delete process.env.XDG_STATE_HOME
       else process.env.XDG_STATE_HOME = previous
     }
   })
 
   test('artifact executables cannot escape the cache', () => {
-    expect(parseArtifactManifest({ protocol: 'tauri-agent-artifact/v1', executable: 'bin/app' }, '/tmp/artifact').executable).toBe('bin/app')
-    expect(parseArtifactManifest({ protocol: 'tauri-agent-artifact/v1', executable: 'bin/app', args: [] }, '/tmp/artifact').args).toEqual([])
-    expect(parseArtifactManifest({ protocol: 'tauri-agent-artifact/v1', executable: 'bin/app', args: [''] }, '/tmp/artifact').args).toEqual([''])
-    expect(() => parseArtifactManifest({ protocol: 'tauri-agent-artifact/v1', executable: 'bin/app', env: { 'BAD=KEY': 'value' } }, '/tmp/artifact')).toThrow('variable name')
-    expect(() => parseArtifactManifest({ protocol: 'tauri-agent-artifact/v1', executable: 'bin/app', env: { OK: '\0' } }, '/tmp/artifact')).toThrow('null bytes')
-    expect(() => parseArtifactManifest({ protocol: 'tauri-agent-artifact/v2', executable: 'bin/app' }, '/tmp/artifact')).toThrow('protocol')
-    expect(() => parseArtifactManifest({ protocol: 'tauri-agent-artifact/v1', executable: '../app' }, '/tmp/artifact')).toThrow('inside')
-    expect(() => parseArtifactManifest({ protocol: 'tauri-agent-artifact/v1', executable: '/bin/sh' }, '/tmp/artifact')).toThrow('inside')
+    expect(parseArtifactManifest({ protocol: 'agent-artifact/v1', executable: 'bin/app' }, '/tmp/artifact').executable).toBe('bin/app')
+    expect(parseArtifactManifest({ protocol: 'agent-artifact/v1', executable: 'bin/app', args: [] }, '/tmp/artifact').args).toEqual([])
+    expect(parseArtifactManifest({ protocol: 'agent-artifact/v1', executable: 'bin/app', args: [''] }, '/tmp/artifact').args).toEqual([''])
+    expect(() => parseArtifactManifest({ protocol: 'agent-artifact/v1', executable: 'bin/app', env: { 'BAD=KEY': 'value' } }, '/tmp/artifact')).toThrow('variable name')
+    expect(() => parseArtifactManifest({ protocol: 'agent-artifact/v1', executable: 'bin/app', env: { OK: '\0' } }, '/tmp/artifact')).toThrow('null bytes')
+    expect(() => parseArtifactManifest({ protocol: 'agent-artifact/v2', executable: 'bin/app' }, '/tmp/artifact')).toThrow('protocol')
+    expect(() => parseArtifactManifest({ protocol: 'agent-artifact/v1', executable: '../app' }, '/tmp/artifact')).toThrow('inside')
+    expect(() => parseArtifactManifest({ protocol: 'agent-artifact/v1', executable: '/bin/sh' }, '/tmp/artifact')).toThrow('inside')
   })
 })
 
@@ -205,7 +206,7 @@ test('application roots cannot escape a worktree through symlinks', async () => 
   await expect(resolveInsideWorktree(worktree, 'app')).rejects.toThrow('escapes its worktree')
   const config = { ...CONFIG, application: { ...CONFIG.application, root: 'app' } }
   const revision = { repository: 'test', worktree, commit: 'a'.repeat(40), dirtyFingerprint: CLEAN_FINGERPRINT }
-  const artifact = { key: 'b'.repeat(64), dir: artifactDir, manifest: { protocol: 'tauri-agent-artifact/v1' as const, executable: 'app' } }
+  const artifact = { key: 'b'.repeat(64), dir: artifactDir, manifest: { protocol: 'agent-artifact/v1' as const, executable: 'app' } }
   await expect(createInstance(config, state, revision, 'wry', artifact)).rejects.toThrow('escapes its worktree')
   expect((await listInstances(state))[0]).toMatchObject({ state: 'failed', processes: [], failure: { class: 'infrastructure_failure' } })
 })
@@ -237,24 +238,24 @@ test('build cache runs a runtime build once and validates its manifest', async (
   const revision = await discoverRevision(repo, 'HEAD', state)
   const config: FleetConfig = {
     ...CONFIG,
-    runtimes: { default: 'wry', wry: { build: ['bash', '-c', `test -z "\${OPENAI_API_KEY:-}\${ANTHROPIC_API_KEY:-}\${CLAUDE_CODE_OAUTH_TOKEN:-}"; n=$(cat count 2>/dev/null || echo 0); echo $((n+1)) > count; mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf '#!/usr/bin/env bash\\nexec sleep 30\\n' > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; printf '{"protocol":"tauri-agent-artifact/v1","executable":"bin/app"}\\n' > "$FLEET_ARTIFACT_MANIFEST"`] } }
+    runtimes: { default: 'wry', wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['bash', '-c', `test -z "\${OPENAI_API_KEY:-}\${ANTHROPIC_API_KEY:-}\${CLAUDE_CODE_OAUTH_TOKEN:-}"; n=$(cat count 2>/dev/null || echo 0); echo $((n+1)) > count; mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf '#!/usr/bin/env bash\\nexec sleep 30\\n' > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; printf '{"protocol":"agent-artifact/v1","executable":"bin/app"}\\n' > "$FLEET_ARTIFACT_MANIFEST"`] } }
   }
   const first = await buildArtifact(config, state, revision, 'wry')
   const second = await buildArtifact(config, state, revision, 'wry')
   expect(second.key).toBe(first.key)
   expect(await readFile(join(repo, 'count'), 'utf8')).toBe('1\n')
   expect((await readFile(join(first.dir, 'bin/app'), 'utf8')).startsWith('#!')).toBe(true)
-  const failed = { ...config, runtimes: { default: 'wry' as const, wry: { build: ['bash', '-c', 'touch "$FLEET_ARTIFACT_DIR/partial"; exit 1'] } } }
+  const failed = { ...config, runtimes: { default: 'wry' as const, wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['bash', '-c', 'touch "$FLEET_ARTIFACT_DIR/partial"; exit 1'] } } }
   await expect(buildArtifact(failed, state, { ...revision, commit: 'f'.repeat(40) }, 'wry')).rejects.toThrow('exited 1')
-  const escapedExecutable = { ...config, runtimes: { default: 'wry' as const, wry: { build: ['bash', '-c', 'mkdir -p "$FLEET_ARTIFACT_DIR/bin"; ln -s /bin/sh "$FLEET_ARTIFACT_DIR/bin/app"; printf \'{"protocol":"tauri-agent-artifact/v1","executable":"bin/app"}\\n\' > "$FLEET_ARTIFACT_MANIFEST"'] } } }
+  const escapedExecutable = { ...config, runtimes: { default: 'wry' as const, wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['bash', '-c', 'mkdir -p "$FLEET_ARTIFACT_DIR/bin"; ln -s /bin/sh "$FLEET_ARTIFACT_DIR/bin/app"; printf \'{"protocol":"agent-artifact/v1","executable":"bin/app"}\\n\' > "$FLEET_ARTIFACT_MANIFEST"'] } } }
   await expect(buildArtifact(escapedExecutable, state, { ...revision, commit: 'e'.repeat(40) }, 'wry')).rejects.toThrow('valid artifact')
-  const escapedCwd = { ...config, runtimes: { default: 'wry' as const, wry: { build: ['bash', '-c', 'mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf \'#!/bin/sh\\n\' > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; ln -s /tmp "$FLEET_ARTIFACT_DIR/outside"; printf \'{"protocol":"tauri-agent-artifact/v1","executable":"bin/app","cwd":"outside"}\\n\' > "$FLEET_ARTIFACT_MANIFEST"'] } } }
+  const escapedCwd = { ...config, runtimes: { default: 'wry' as const, wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['bash', '-c', 'mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf \'#!/bin/sh\\n\' > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; ln -s /tmp "$FLEET_ARTIFACT_DIR/outside"; printf \'{"protocol":"agent-artifact/v1","executable":"bin/app","cwd":"outside"}\\n\' > "$FLEET_ARTIFACT_MANIFEST"'] } } }
   await expect(buildArtifact(escapedCwd, state, { ...revision, commit: 'd'.repeat(40) }, 'wry')).rejects.toThrow('valid artifact')
-  const escapedManifest = { ...config, runtimes: { default: 'wry' as const, wry: { build: ['bash', '-c', 'mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf \'#!/bin/sh\\n\' > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; printf \'{"protocol":"tauri-agent-artifact/v1","executable":"bin/app"}\\n\' > outside-manifest.json; ln -s "$PWD/outside-manifest.json" "$FLEET_ARTIFACT_MANIFEST"'] } } }
+  const escapedManifest = { ...config, runtimes: { default: 'wry' as const, wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['bash', '-c', 'mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf \'#!/bin/sh\\n\' > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; printf \'{"protocol":"agent-artifact/v1","executable":"bin/app"}\\n\' > outside-manifest.json; ln -s "$PWD/outside-manifest.json" "$FLEET_ARTIFACT_MANIFEST"'] } } }
   await expect(buildArtifact(escapedManifest, state, { ...revision, commit: '1'.repeat(40) }, 'wry')).rejects.toThrow('valid artifact')
-  const escapedRoot = { ...config, runtimes: { default: 'wry' as const, wry: { build: ['bash', '-c', 'rm -rf "$FLEET_ARTIFACT_DIR"; mkdir -p outside-artifact/bin; ln -s "$PWD/outside-artifact" "$FLEET_ARTIFACT_DIR"; printf \'#!/bin/sh\\n\' > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; printf \'{"protocol":"tauri-agent-artifact/v1","executable":"bin/app"}\\n\' > "$FLEET_ARTIFACT_MANIFEST"'] } } }
+  const escapedRoot = { ...config, runtimes: { default: 'wry' as const, wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['bash', '-c', 'rm -rf "$FLEET_ARTIFACT_DIR"; mkdir -p outside-artifact/bin; ln -s "$PWD/outside-artifact" "$FLEET_ARTIFACT_DIR"; printf \'#!/bin/sh\\n\' > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; printf \'{"protocol":"agent-artifact/v1","executable":"bin/app"}\\n\' > "$FLEET_ARTIFACT_MANIFEST"'] } } }
   await expect(buildArtifact(escapedRoot, state, { ...revision, commit: '2'.repeat(40) }, 'wry')).rejects.toThrow('valid artifact')
-  const stagingLink = { ...config, runtimes: { default: 'wry' as const, wry: { build: ['bash', '-c', 'mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf \'#!/bin/sh\\n\' > "$FLEET_ARTIFACT_DIR/bin/real"; chmod +x "$FLEET_ARTIFACT_DIR/bin/real"; ln -s "$FLEET_ARTIFACT_DIR/bin/real" "$FLEET_ARTIFACT_DIR/bin/app"; printf \'{"protocol":"tauri-agent-artifact/v1","executable":"bin/app"}\\n\' > "$FLEET_ARTIFACT_MANIFEST"'] } } }
+  const stagingLink = { ...config, runtimes: { default: 'wry' as const, wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['bash', '-c', 'mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf \'#!/bin/sh\\n\' > "$FLEET_ARTIFACT_DIR/bin/real"; chmod +x "$FLEET_ARTIFACT_DIR/bin/real"; ln -s "$FLEET_ARTIFACT_DIR/bin/real" "$FLEET_ARTIFACT_DIR/bin/app"; printf \'{"protocol":"agent-artifact/v1","executable":"bin/app"}\\n\' > "$FLEET_ARTIFACT_MANIFEST"'] } } }
   await expect(buildArtifact(stagingLink, state, { ...revision, commit: 'c'.repeat(40) }, 'wry')).rejects.toThrow('invalid after installation')
   expect((await readdir(join(state, 'artifacts'))).some((name) => name.endsWith('.tmp'))).toBe(false)
 })
@@ -309,7 +310,7 @@ while true; do sleep 1; done
   })
   await waitFor(() => Bun.file(ready).exists(), 1_000, 'TERM-ignoring process readiness')
   cleanups.push(async () => { await terminateOwned(live, 20) })
-  const fakeExecutable = '/opt/tauri-agent-fleet/stubborn'
+  const fakeExecutable = '/opt/agent-fleet/stubborn'
   const recorded: ProcessRecord = {
     ...live,
     identitySource: 'darwin-libproc',
@@ -395,7 +396,7 @@ test('Darwin teardown refuses KILL after the process-group leader exits', async 
     try { childPid = Number(await readFile(childFile, 'utf8')); return childPid > 0 } catch { return false }
   }, 1_000, 'child PID')
   expect(record.pgid).toBe(record.pid)
-  const fakeExecutable = '/opt/tauri-agent-fleet/group-leader'
+  const fakeExecutable = '/opt/agent-fleet/group-leader'
   const darwinRecord: ProcessRecord = {
     ...record, identitySource: 'darwin-libproc', startTime: '1783867000.123456', executable: fakeExecutable
   }
@@ -454,7 +455,7 @@ test('startup failures persist infrastructure evidence without a live process', 
     else process.env.FLEET_XVFB_COMMAND = previous
   })
   const revision = { repository: 'test', worktree, commit: 'a'.repeat(40), dirtyFingerprint: CLEAN_FINGERPRINT }
-  const artifact = { key: 'b'.repeat(64), dir: artifactDir, manifest: { protocol: 'tauri-agent-artifact/v1' as const, executable: 'app' } }
+  const artifact = { key: 'b'.repeat(64), dir: artifactDir, manifest: { protocol: 'agent-artifact/v1' as const, executable: 'app' } }
   await expect(createInstance(CONFIG, root, revision, 'wry', artifact, undefined, 'linux')).rejects.toThrow('ENOENT')
   const [failed] = await listInstances(root)
   expect(failed).toMatchObject({ state: 'failed', processes: [], failure: { class: 'infrastructure_failure' } })
@@ -502,7 +503,7 @@ process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
   const revision = { repository: 'test', worktree, commit: 'a'.repeat(40), dirtyFingerprint: CLEAN_FINGERPRINT }
   const artifact = {
     key: 'b'.repeat(64), dir: artifactDir,
-    manifest: { protocol: 'tauri-agent-artifact/v1' as const, executable: 'app', env: { DISPLAY: ':forged', FLEET_DISPLAY: ':forged', FLEET_VNC_PORT: '5900' } }
+    manifest: { protocol: 'agent-artifact/v1' as const, executable: 'app', env: { DISPLAY: ':forged', FLEET_DISPLAY: ':forged', FLEET_VNC_PORT: '5900' } }
   }
   const instance = await createInstance(config, root, revision, 'wry', artifact, 'native', 'darwin')
   cleanups.push(async () => { if (await processOwned(instance.processes[0]!)) await stopInstance(config, root, instance) })
@@ -584,7 +585,7 @@ process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
   const worktreeTwo = join(dir, 'worktree-two')
   await Promise.all([mkdir(worktreeOne), mkdir(worktreeTwo)])
   const revision = { repository: 'test', worktree: worktreeOne, commit: 'd'.repeat(40), dirtyFingerprint: 'e'.repeat(64) }
-  const artifact = { key: 'f'.repeat(64), dir: artifactDir, manifest: { protocol: 'tauri-agent-artifact/v1' as const, executable: 'app', env: { HOME: '/escape', XDG_STATE_HOME: '/escape', DISPLAY: ':1', CUSTOM: 'yes' } } }
+  const artifact = { key: 'f'.repeat(64), dir: artifactDir, manifest: { protocol: 'agent-artifact/v1' as const, executable: 'app', env: { HOME: '/escape', XDG_STATE_HOME: '/escape', DISPLAY: ':1', CUSTOM: 'yes' } } }
   const [one, two] = await Promise.all([
     createInstance(CONFIG, root, revision, 'wry', artifact, 'one', 'linux'),
     createInstance(CONFIG, root, revision, 'wry', artifact, 'two', 'linux')
@@ -637,10 +638,10 @@ process.on('SIGTERM', () => { server.stop(true); process.exit(0) })
   const schedulerConfig: FleetConfig = {
     ...CONFIG,
     lifecycle: { cleanupInstance: ['bash', '-c', 'touch "$FLEET_HOME/cleaned"'] },
-    runtimes: { default: 'wry', wry: { build: ['bash', '-c', `install -m 755 '${app}' "$FLEET_ARTIFACT_DIR/app"; printf '{"protocol":"tauri-agent-artifact/v1","executable":"app"}\\n' > "$FLEET_ARTIFACT_MANIFEST"`] } }
+    runtimes: { default: 'wry', wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['bash', '-c', `install -m 755 '${app}' "$FLEET_ARTIFACT_DIR/app"; printf '{"protocol":"agent-artifact/v1","executable":"app"}\\n' > "$FLEET_ARTIFACT_MANIFEST"`] } }
   }
   const suites: Suite[] = ['first', 'second'].map((id) => ({
-    protocol: 'tauri-agent-suite/v1', id, objective: `Pass ${id}`,
+    protocol: 'agent-suite/v1', id, objective: `Pass ${id}`,
     pass: [{ expect: { role: 'button', name: 'Ready' } }], budget: { steps: 1, seconds: 5 }
   }))
   await expect(runSuites(schedulerConfig, schedulerRoot, revision, suites, { jobs: 0 })).rejects.toThrow('positive safe integer')
@@ -902,9 +903,9 @@ test('real bridge expectation mismatches remain deterministic false conditions',
 test('mock-model run passes by deterministic assertion and persists lean artifacts', async () => {
   const harness = await runnerHarness()
   cleanups.push(harness.close)
-  const suite: Suite = { protocol: 'tauri-agent-suite/v1', id: 'save', objective: 'Rename the document', pass: [{ expect: { role: 'textbox', name: 'Document name', value: 'notes.md' } }], budget: { steps: 3, seconds: 5 } }
+  const suite: Suite = { protocol: 'agent-suite/v1', id: 'save', objective: 'Rename the document', pass: [{ expect: { role: 'textbox', name: 'Document name', value: 'notes.md' } }], budget: { steps: 3, seconds: 5 } }
   const mock: NextAction = async () => ({ action: { type: 'fill', role: 'textbox', name: 'Document name', value: 'notes.md' }, usage: { inputTokens: 10, outputTokens: 2 } })
-  const result = await runSuite(harness.root, CONFIG.application.id, harness.instance, suite, mock)
+  const result = await runSuite(harness.root, CONFIG.application.id, harness.instance, suite, mock, tauriDriver)
   expect(result.state).toBe('passed')
   expect(result.run?.inputTokens).toBe(10)
   const dir = join(result.directories.artifacts, result.run!.id)
@@ -912,7 +913,7 @@ test('mock-model run passes by deterministic assertion and persists lean artifac
   const run = JSON.parse(await readFile(join(dir, 'run.json'), 'utf8'))
   expect((await stat(join(dir, 'run.json'))).mode & 0o777).toBe(0o600)
   expect((await stat(join(dir, 'actions.jsonl'))).mode & 0o777).toBe(0o600)
-  expect(run).toMatchObject({ protocol: 'tauri-agent-run/v1', state: 'passed' })
+  expect(run).toMatchObject({ protocol: 'agent-run/v1', state: 'passed' })
   expect(run.finishedAt).toBe(run.run.finishedAt)
 })
 
@@ -920,9 +921,9 @@ test('app timeouts, invalid usage, and repeated model actions have distinct fail
   const appHarness = await runnerHarness()
   cleanups.push(appHarness.close)
   const wait: NextAction = async () => await new Promise<never>(() => {})
-  const appSuite: Suite = { protocol: 'tauri-agent-suite/v1', id: 'app-timeout', objective: 'Impossible', pass: UNREACHABLE, budget: { steps: 5, seconds: 1, repetitions: 5 } }
+  const appSuite: Suite = { protocol: 'agent-suite/v1', id: 'app-timeout', objective: 'Impossible', pass: UNREACHABLE, budget: { steps: 5, seconds: 1, repetitions: 5 } }
   const started = Date.now()
-  const appResult = await runSuite(appHarness.root, CONFIG.application.id, appHarness.instance, appSuite, wait)
+  const appResult = await runSuite(appHarness.root, CONFIG.application.id, appHarness.instance, appSuite, wait, tauriDriver)
   expect(appResult.run?.failure).toBe('app_failure')
   expect(Date.now() - started).toBeLessThan(2_000)
 
@@ -932,13 +933,13 @@ test('app timeouts, invalid usage, and repeated model actions have distinct fail
     await terminateOwned(exitHarness.instance.processes[0]!, 50)
     return { action: { type: 'wait', milliseconds: 1 }, usage: { inputTokens: 1, outputTokens: 1 } }
   }
-  const exitResult = await runSuite(exitHarness.root, CONFIG.application.id, exitHarness.instance, { ...appSuite, id: 'app-exit', budget: { ...appSuite.budget, seconds: 5 } }, exit)
+  const exitResult = await runSuite(exitHarness.root, CONFIG.application.id, exitHarness.instance, { ...appSuite, id: 'app-exit', budget: { ...appSuite.budget, seconds: 5 } }, exit, tauriDriver)
   expect(exitResult.run).toMatchObject({ failure: 'app_failure', message: 'application exited' })
 
   const usageHarness = await runnerHarness()
   cleanups.push(usageHarness.close)
   const invalidUsage: NextAction = async () => ({ action: { type: 'wait', milliseconds: 1 }, usage: { inputTokens: -1, outputTokens: 1 } })
-  const usageResult = await runSuite(usageHarness.root, CONFIG.application.id, usageHarness.instance, { ...appSuite, id: 'invalid-usage', budget: { ...appSuite.budget, seconds: 5 } }, invalidUsage)
+  const usageResult = await runSuite(usageHarness.root, CONFIG.application.id, usageHarness.instance, { ...appSuite, id: 'invalid-usage', budget: { ...appSuite.budget, seconds: 5 } }, invalidUsage, tauriDriver)
   expect(usageResult.run).toMatchObject({ failure: 'runner_failure', inputTokens: 0, outputTokens: 0 })
 
   const overflowHarness = await runnerHarness()
@@ -948,7 +949,7 @@ test('app timeouts, invalid usage, and repeated model actions have distinct fail
     action: { type: 'wait', milliseconds: 1 },
     usage: { inputTokens: usageCall++ === 0 ? Number.MAX_SAFE_INTEGER : 1, outputTokens: 0 }
   })
-  const overflowResult = await runSuite(overflowHarness.root, CONFIG.application.id, overflowHarness.instance, { ...appSuite, id: 'overflow-usage', budget: { ...appSuite.budget, seconds: 5 } }, overflowingUsage)
+  const overflowResult = await runSuite(overflowHarness.root, CONFIG.application.id, overflowHarness.instance, { ...appSuite, id: 'overflow-usage', budget: { ...appSuite.budget, seconds: 5 } }, overflowingUsage, tauriDriver)
   expect(overflowResult.run).toMatchObject({ failure: 'runner_failure', inputTokens: Number.MAX_SAFE_INTEGER, message: 'model usage token totals exceed safe integer range' })
 
   const infrastructureHarness = await runnerHarness()
@@ -957,14 +958,14 @@ test('app timeouts, invalid usage, and repeated model actions have distinct fail
     await infrastructureHarness.disconnect()
     return { action: { type: 'click', role: 'button', name: 'Missing' }, usage: { inputTokens: 1, outputTokens: 1 } }
   }
-  const infrastructureResult = await runSuite(infrastructureHarness.root, CONFIG.application.id, infrastructureHarness.instance, { ...appSuite, id: 'transport-failure', budget: { ...appSuite.budget, seconds: 5 } }, disconnect)
+  const infrastructureResult = await runSuite(infrastructureHarness.root, CONFIG.application.id, infrastructureHarness.instance, { ...appSuite, id: 'transport-failure', budget: { ...appSuite.budget, seconds: 5 } }, disconnect, tauriDriver)
   expect(infrastructureResult.run?.failure).toBe('infrastructure_failure')
 
   const runnerHarnessValue = await runnerHarness()
   cleanups.push(runnerHarnessValue.close)
   const repeat: NextAction = async () => ({ action: { type: 'wait', milliseconds: 1 }, usage: { inputTokens: 1, outputTokens: 1 } })
-  const runnerSuite: Suite = { protocol: 'tauri-agent-suite/v1', id: 'runner-repeat', objective: 'Impossible', pass: UNREACHABLE, budget: { steps: 5, seconds: 5, repetitions: 1 } }
-  const runnerResult = await runSuite(runnerHarnessValue.root, CONFIG.application.id, runnerHarnessValue.instance, runnerSuite, repeat)
+  const runnerSuite: Suite = { protocol: 'agent-suite/v1', id: 'runner-repeat', objective: 'Impossible', pass: UNREACHABLE, budget: { steps: 5, seconds: 5, repetitions: 1 } }
+  const runnerResult = await runSuite(runnerHarnessValue.root, CONFIG.application.id, runnerHarnessValue.instance, runnerSuite, repeat, tauriDriver)
   expect(runnerResult.run?.failure).toBe('runner_failure')
   expect(await readFile(join(runnerResult.directories.artifacts, runnerResult.run!.id, 'failure.png'))).not.toHaveLength(0)
 })
@@ -977,12 +978,12 @@ test('artifacts share identical large files through the content store', async ()
     'printf "#!/bin/sh\\nexit 0\\n" > "$FLEET_ARTIFACT_DIR/bin/app"',
     'chmod +x "$FLEET_ARTIFACT_DIR/bin/app"',
     'head -c 2097152 /dev/zero > "$FLEET_ARTIFACT_DIR/bin/blob"',
-    'printf \'{"protocol":"tauri-agent-artifact/v1","executable":"bin/app"}\' > "$FLEET_ARTIFACT_MANIFEST"'
+    'printf \'{"protocol":"agent-artifact/v1","executable":"bin/app"}\' > "$FLEET_ARTIFACT_MANIFEST"'
   ].join('; ')]
   const config: FleetConfig = {
-    protocol: 'tauri-agent-fleet/v1',
+    protocol: 'agent-fleet/v1',
     application: { id: 'com.example.app', root: '.' },
-    runtimes: { default: 'wry', wry: { build } }
+    runtimes: { default: 'wry', wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build } }
   }
   const revision = (commit: string) => ({
     repository: 'a'.repeat(64), commit, dirtyFingerprint: CLEAN_FINGERPRINT, worktree: base
