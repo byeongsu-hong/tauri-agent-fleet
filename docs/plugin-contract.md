@@ -1,8 +1,12 @@
 # Plugin contract
 
-Fleet talks to one running application through the published direct TypeScript
-`DebuggerClient`. It never uses MCP and never asks the plugin to manage builds,
-instances, suites, dashboards, or model providers.
+This describes the endpoint contract the **Tauri driver's** plugin
+(`tauri-agent-plugin`) satisfies. The framework-neutral Fleet↔driver contract —
+what any driver implements — is in [driver-contract.md](driver-contract.md).
+
+The Tauri driver talks to one running application through the published direct
+TypeScript `DebuggerClient`. It never uses MCP and never asks the plugin to
+manage builds, instances, suites, dashboards, or model providers.
 
 ## Attach negotiation
 

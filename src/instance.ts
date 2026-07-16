@@ -2,12 +2,13 @@ import { randomBytes } from 'node:crypto'
 import { access } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { attachAgent } from './agent.ts'
 import type { Artifact } from './build.ts'
 import { runCommand } from './command.ts'
+import { loadDriver } from './driver.ts'
 import { freePort, portOpen, waitFor } from './network.ts'
 import { processOwned, spawnOwned, terminateAll } from './process.ts'
 import { resolveInsideWorktree } from './revision.ts'
+import { runtimeDefinition } from './schema.ts'
 import { listInstances, privateDir, saveInstance, withLock } from './storage.ts'
 import type { FleetConfig, InstanceRecord, Revision, RuntimeVariant } from './types.ts'
 
@@ -165,8 +166,9 @@ export async function createInstance(
     }))
     await saveInstance(root, instance)
     const app = instance.processes.find((item) => item.name === 'app')!
-    const attached = await attachAgent(config.application.id, directories.runtime, app)
-    instance.endpoint = { healthy: true, capabilities: attached.capabilities }
+    const driver = await loadDriver(runtimeDefinition(config, variant).driver)
+    const capabilities = await driver.probe({ appId: config.application.id, runtimeDir: directories.runtime, app, deadline: Date.now() + 60_000 })
+    instance.endpoint = { healthy: true, capabilities }
     instance.state = 'ready'
     await saveInstance(root, instance)
     return instance
@@ -257,7 +259,8 @@ export async function refreshInstance(config: FleetConfig, root: string, instanc
       const app = instance.processes.find((process) => process.name === 'app')
       let capabilities: unknown
       try {
-        capabilities = (await attachAgent(config.application.id, instance.directories.runtime, app!, 1_000)).capabilities
+        const driver = await loadDriver(runtimeDefinition(config, instance.variant).driver)
+        capabilities = await driver.probe({ appId: config.application.id, runtimeDir: instance.directories.runtime, app: app!, deadline: Date.now() + 1_000 })
       } catch (error) {
         if (instance.state === 'booting') {
           if (staleBoot) {

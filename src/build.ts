@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { runCommand } from './command.ts'
 import { artifactKey, CLEAN_FINGERPRINT, resolveInsideWorktree } from './revision.ts'
-import { parseArtifactManifest } from './schema.ts'
+import { parseArtifactManifest, runtimeDefinition } from './schema.ts'
 import { atomicJson, privateDir, withLock, withRenewableLock } from './storage.ts'
 import type { ArtifactManifest, FleetConfig, Revision, RuntimeVariant } from './types.ts'
 
@@ -85,8 +85,7 @@ export async function buildArtifact(
   revision: Revision,
   variant: RuntimeVariant
 ): Promise<Artifact> {
-  const definition = config.runtimes[variant]
-  if (!definition) throw new Error(`runtime is not configured: ${variant}`)
+  const definition = runtimeDefinition(config, variant)
   const key = artifactKey(revision, variant)
   const shared = process.env.FLEET_ARTIFACT_CACHE
   if (shared && !isAbsolute(shared)) throw new Error('FLEET_ARTIFACT_CACHE must be an absolute path')

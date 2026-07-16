@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { COORDINATOR_PROTOCOL, CoordinatorError, CoordinatorStore } from '../src/coordinator.ts'
 
 const suite = {
-  protocol: 'tauri-agent-suite/v1', id: 'smoke', runtime: 'wry', objective: 'Pass',
+  protocol: 'agent-suite/v1', id: 'smoke', runtime: 'wry', objective: 'Pass',
   pass: [{ expect: { role: 'button', name: 'Ready', present: true } }], budget: { steps: 1, seconds: 10 }
 } as const
 

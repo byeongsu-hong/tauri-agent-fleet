@@ -14,10 +14,10 @@ test('two worker roots build one immutable artifact through the shared cache', a
   const previous = process.env.FLEET_ARTIFACT_CACHE
   process.env.FLEET_ARTIFACT_CACHE = cache
   const config: FleetConfig = {
-    protocol: 'tauri-agent-fleet/v1', application: { id: 'test', root: '.' },
+    protocol: 'agent-fleet/v1', application: { id: 'test', root: '.' },
     runtimes: {
       default: 'wry',
-      wry: { build: ['bash', '-c', 'n=$(cat count 2>/dev/null || echo 0); echo $((n+1)) > count; sleep 0.05; mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf "#!/bin/sh\\nexit 0\\n" > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; printf \'{"protocol":"tauri-agent-artifact/v1","executable":"bin/app"}\\n\' > "$FLEET_ARTIFACT_MANIFEST"'] }
+      wry: { driver: '@byeongsu-hong/agent-fleet/driver-tauri', build: ['bash', '-c', 'n=$(cat count 2>/dev/null || echo 0); echo $((n+1)) > count; sleep 0.05; mkdir -p "$FLEET_ARTIFACT_DIR/bin"; printf "#!/bin/sh\\nexit 0\\n" > "$FLEET_ARTIFACT_DIR/bin/app"; chmod +x "$FLEET_ARTIFACT_DIR/bin/app"; printf \'{"protocol":"agent-artifact/v1","executable":"bin/app"}\\n\' > "$FLEET_ARTIFACT_MANIFEST"'] }
     }
   }
   const revision: Revision = {
@@ -30,7 +30,7 @@ test('two worker roots build one immutable artifact through the shared cache', a
     ])
     expect(first.dir).toBe(second.dir)
     expect(await readFile(join(workspace, 'count'), 'utf8')).toBe('1\n')
-    expect(await readFile(join(first.dir, 'manifest.json'), 'utf8')).toContain('tauri-agent-artifact/v1')
+    expect(await readFile(join(first.dir, 'manifest.json'), 'utf8')).toContain('agent-artifact/v1')
   } finally {
     if (previous === undefined) delete process.env.FLEET_ARTIFACT_CACHE
     else process.env.FLEET_ARTIFACT_CACHE = previous

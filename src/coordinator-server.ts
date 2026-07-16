@@ -57,7 +57,7 @@ function leaseBody(value: unknown): { workerId: string; leaseToken: string } {
 function projection(jobs: PublicCoordinatorJob[]): unknown {
   const active = jobs.filter((job) => job.state === 'leased' || job.state === 'running').length
   return {
-    protocol: 'tauri-agent-coordinator/v1',
+    protocol: 'agent-coordinator/v1',
     generatedAt: new Date().toISOString(),
     summary: {
       total: jobs.length,

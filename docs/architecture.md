@@ -2,9 +2,11 @@
 
 ## Product boundary
 
-`tauri-agent-fleet` is the multi-application control plane around
-`tauri-agent-plugin`. The plugin operates one Tauri application. Fleet owns the
-build, process, scheduling, runner, artifact, and dashboard layers above it.
+`agent-fleet` is the multi-application control plane around a pluggable **agent
+driver**. A driver operates one live application; Fleet owns the build, process,
+scheduling, runner, artifact, and dashboard layers above it and stays framework-
+neutral. The bundled Tauri driver wraps `tauri-agent-plugin`; other frameworks
+(iced, …) are separate drivers. See [the driver contract](driver-contract.md).
 
 ```text
 SourceRevision
@@ -36,15 +38,17 @@ runs, and enforces a bounded `--jobs` concurrency limit.
 Planned commands:
 
 ```text
-tauri-agent-fleet up [revision...]
-tauri-agent-fleet down [instance...]
-tauri-agent-fleet status
-tauri-agent-fleet dashboard
-tauri-agent-fleet test <suite-id...> --runtime <wry|cef> --jobs <n>
+agent-fleet up [revision...]
+agent-fleet down [instance...]
+agent-fleet status
+agent-fleet dashboard
+agent-fleet test <suite-id...> --runtime <name> --jobs <n>
 ```
 
 `up` retains the current interactive worktree dashboard use case. `test` uses
-build-once/run-many artifacts for parallel suites.
+build-once/run-many artifacts for parallel suites. Runtimes are open: config
+names them and points each at a driver, so `--runtime` accepts any configured
+runtime name.
 
 ### Build cache
 
@@ -66,23 +70,25 @@ Each instance receives independent values for:
 - application data
 - an X display and VNC port on Linux, or an explicit native display marker on macOS
 - application and daemon ports
-- tauri-agent endpoint registry
+- agent endpoint registry (per driver)
 - process group and PID metadata
 
-Readiness requires both a live process group and a successful plugin attach.
+Readiness requires both a live process group and a successful driver probe.
 VNC readiness is a separate human-observation capability, not proof that the app
 is driveable. Native macOS instances do not synthesize an X display, VNC port,
 or VNC route; their dashboard capability is explicitly unavailable.
 
-### Tauri agent client
+### Driver
 
-Fleet imports the published `DebuggerClient` and protocol types from
-`@byeongsu-hong/tauri-agent-plugin`. Fleet runners use that direct client and do
-not pay MCP tool-schema tokens.
+Fleet loads a driver by import specifier (`runtimes.<name>.driver`) and talks to
+one live app only through the `Driver` -> `AgentSession` contract in
+[driver-contract.md](driver-contract.md). Core imports no framework SDK.
 
-The plugin contract needed by Fleet is documented in the implementation plan.
-Fleet must negotiate protocol/capability information instead of guessing Wry,
-CEF, screenshot support, or stream support.
+The bundled Tauri driver (`@byeongsu-hong/agent-fleet/driver-tauri`) wraps the
+published `DebuggerClient` from `@byeongsu-hong/tauri-agent-plugin`, so runners
+use a direct client and pay no MCP tool-schema tokens. A driver declares its
+capabilities at attach instead of Fleet guessing Wry, CEF, screenshot, or stream
+support.
 
 ### Runner
 
@@ -95,8 +101,8 @@ A low-cost model receives:
 - remaining step/time/token budgets.
 
 The model selects only the next typed action. Fleet validates and executes the
-action through the plugin. Deterministic `expect`, state, and IPC checks decide
-pass/fail.
+action through the driver. Deterministic `expect`, `state`, and `event` checks
+decide pass/fail.
 
 ### Dashboard
 
@@ -116,7 +122,7 @@ until polling is measurably inadequate.
 Dashboard health probing stays in memory; it does not rewrite lifecycle state
 or terminate processes. Persisted repair and lifecycle control remain CLI-owned.
 
-`GET /api/v1/fleet` returns `tauri-agent-console/v1`. It exposes lifecycle and
+`GET /api/v1/fleet` returns `agent-console/v1`. It exposes lifecycle and
 failure evidence, runtime, clean/dirty revision state, run progress, usage, health, and routed
 artifact/VNC URLs; persisted directories, processes, ports, endpoint
 capabilities, and cache keys remain internal.
@@ -145,13 +151,13 @@ normative protocol and acceptance matrix.
 
 ## Configuration contract
 
-The v1 application configuration lives at `.tauri-agent/fleet.json`. Fleet
+The v1 application configuration lives at `.agent/fleet.json`. Fleet
 discovers it while walking upward, and command arrays are passed without shell
 interpolation.
 
 ```json
 {
-  "protocol": "tauri-agent-fleet/v1",
+  "protocol": "agent-fleet/v1",
   "application": {
     "id": "com.example.app",
     "root": "app"
@@ -164,14 +170,19 @@ interpolation.
   "runtimes": {
     "default": "wry",
     "wry": {
+      "driver": "@byeongsu-hong/agent-fleet/driver-tauri",
       "build": ["bash", "qa/fleet/build-wry.sh"]
     },
     "cef": {
+      "driver": "@byeongsu-hong/agent-fleet/driver-tauri",
       "build": ["bash", "qa/fleet/build-cef.sh"]
     }
   }
 }
 ```
+
+Each runtime names a `driver` (an import specifier Fleet loads) and its `build`
+command. The runtime name is an open string; `default` selects one.
 
 Fleet provides a small, fixed environment contract to hooks:
 
@@ -194,9 +205,9 @@ the former and write a v1 manifest to the latter. Manifest `executable` and
 optional `cwd` paths are relative to, and confined within, the artifact
 directory.
 
-The manifest declares `"protocol": "tauri-agent-artifact/v1"`. Completed run
-metadata declares `tauri-agent-run/v1`; `status --json` declares
-`tauri-agent-status/v1`.
+The manifest declares `"protocol": "agent-artifact/v1"`. Completed run
+metadata declares `agent-run/v1`; `status --json` declares
+`agent-status/v1`.
 
 Hooks may prepare product state but must not start Xvfb, VNC, the Fleet server,
 or the dashboard.
@@ -223,11 +234,11 @@ product-specific recovery contract.
 ## Suite contract
 
 The v1 suite format is deliberately small. Each `<id>.json` lives under
-`.tauri-agent/suites/` and declares the same `id`.
+`.agent/suites/` and declares the same `id`.
 
 ```json
 {
-  "protocol": "tauri-agent-suite/v1",
+  "protocol": "agent-suite/v1",
   "id": "editor-save",
   "runtime": "wry",
   "objective": "Create a document, rename it to notes.md, and save it.",
@@ -239,8 +250,8 @@ The v1 suite format is deliberately small. Each `<id>.json` lives under
       }
     },
     {
-      "ipc": {
-        "command": "save_document",
+      "event": {
+        "name": "save_document",
         "ok": true
       }
     }

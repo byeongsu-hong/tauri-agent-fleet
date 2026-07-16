@@ -5,7 +5,7 @@ import { parseSuite } from './schema.ts'
 import { atomicJson, privateDir, withLock } from './storage.ts'
 import type { FailureClass, RuntimeVariant, Suite } from './types.ts'
 
-export const COORDINATOR_PROTOCOL = 'tauri-agent-coordinator/v1' as const
+export const COORDINATOR_PROTOCOL = 'agent-coordinator/v1' as const
 export type CoordinatorJobState = 'queued' | 'leased' | 'running' | 'passed' | 'failed'
 
 export interface CoordinatorJob {
@@ -57,7 +57,7 @@ const REPOSITORY = /^[a-f0-9]{64}$/
 const COMMIT = /^[a-f0-9]{40}$/
 export const COORDINATOR_ARTIFACTS = new Set([
   'run.json', 'actions.jsonl', 'model-usage.jsonl', 'semantic.jsonl',
-  'console.jsonl', 'network.jsonl', 'ipc.jsonl', 'failure.png', 'replay.json'
+  'console.jsonl', 'network.jsonl', 'events.jsonl', 'failure.png', 'replay.json'
 ])
 export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 export const MAX_JOB_ARTIFACT_BYTES = 64 * 1024 * 1024

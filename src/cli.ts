@@ -12,22 +12,22 @@ import { listInstances, loadConfig, loadSuite, stateRoot } from './storage.ts'
 import type { RuntimeVariant } from './types.ts'
 import { runWorker } from './worker.ts'
 
-const HELP = `tauri-agent-fleet <command> [options]
+const HELP = `agent-fleet <command> [options]
 
 Commands:
   up [revision...]                 build and start interactive instances
-     [--runtime wry|cef] [--id PREFIX]
+     [--runtime NAME] [--id PREFIX]
   down [instance...]               stop exact instances (all active if omitted)
   status [--json]                  show instance and run health
   dashboard [--host HOST] [--port PORT]
-  test <suite...> [--revision REF] [--runtime wry|cef] [--jobs N]
+  test <suite...> [--revision REF] [--runtime NAME] [--jobs N]
   coordinator [--host HOST] [--port PORT] [--max-active N]
-  submit <suite...> --coordinator URL [--revision REF] [--runtime wry|cef]
+  submit <suite...> --coordinator URL [--revision REF] [--runtime NAME]
   worker --coordinator URL --id ID [--jobs N] [--once]
   remote-status --coordinator URL [--json]
 
 Options:
-  --config PATH                    config file (default .tauri-agent/fleet.json)
+  --config PATH                    config file (default .agent/fleet.json)
   --help                           show this help
   --version                        show the version`
 
@@ -48,8 +48,7 @@ function flag(args: string[], name: string): boolean {
 }
 
 function runtime(value: string | undefined): RuntimeVariant | undefined {
-  if (value === undefined) return undefined
-  if (value !== 'wry' && value !== 'cef') throw new Error('--runtime must be wry or cef')
+  // Any configured runtime name; buildArtifact rejects an unconfigured one.
   return value
 }
 
@@ -177,7 +176,7 @@ async function main(): Promise<number> {
     if (args.length) throw new Error(`unknown option: ${args[0]}`)
     const instances = await Promise.all((await listInstances(root)).map((item) => refreshInstance(loaded.config, root, item)))
     if (json) console.log(JSON.stringify({
-      protocol: 'tauri-agent-status/v1',
+      protocol: 'agent-status/v1',
       generatedAt: new Date().toISOString(),
       instances: instances.map(({ schemaVersion: _, variant: runtime, endpoint: agent, ...instance }) => ({ ...instance, runtime, ...(agent ? { agent } : {}) }))
     }, null, 2))

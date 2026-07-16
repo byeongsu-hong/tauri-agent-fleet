@@ -1,5 +1,15 @@
 import { isAbsolute, relative, resolve, sep } from 'node:path'
-import type { ArtifactManifest, FleetConfig, RunnerAction, Suite } from './types.ts'
+import type { ArtifactManifest, FleetConfig, RunnerAction, RuntimeDefinition, Suite } from './types.ts'
+
+// Resolve a named runtime's definition (driver + build), or throw. Keeps the
+// `string | RuntimeDefinition` union off every call site.
+export function runtimeDefinition(config: FleetConfig, name: string): RuntimeDefinition {
+  const definition = config.runtimes[name]
+  if (name === 'default' || definition === undefined || typeof definition === 'string') {
+    throw new Error(`runtime is not configured: ${name}`)
+  }
+  return definition
+}
 
 type ObjectValue = Record<string, unknown>
 
@@ -59,30 +69,33 @@ function optionalCommand(value: unknown, label: string): string[] | undefined {
 export function parseConfig(value: unknown): FleetConfig {
   const root = object(value, 'config')
   only(root, ['protocol', 'application', 'lifecycle', 'runtimes'], 'config')
-  if (root.protocol !== 'tauri-agent-fleet/v1') throw new Error('config.protocol must be tauri-agent-fleet/v1')
+  if (root.protocol !== 'agent-fleet/v1') throw new Error('config.protocol must be agent-fleet/v1')
   const application = object(root.application, 'config.application')
   only(application, ['id', 'root'], 'config.application')
   const runtimes = object(root.runtimes, 'config.runtimes')
-  only(runtimes, ['default', 'wry', 'cef'], 'config.runtimes')
-  if (runtimes.default !== 'wry' && runtimes.default !== 'cef') throw new Error('config.runtimes.default must be wry or cef')
-  const wry = runtimes.wry === undefined ? undefined : object(runtimes.wry, 'config.runtimes.wry')
-  if (wry) only(wry, ['build'], 'config.runtimes.wry')
-  const cef = runtimes.cef === undefined ? undefined : object(runtimes.cef, 'config.runtimes.cef')
-  if (cef) only(cef, ['build'], 'config.runtimes.cef')
-  if (runtimes[runtimes.default] === undefined) throw new Error('config.runtimes.default must name a configured runtime')
+  if (typeof runtimes.default !== 'string' || !runtimes.default.trim()) throw new Error('config.runtimes.default must name a runtime')
+  const runtimeNames = Object.keys(runtimes).filter((name) => name !== 'default')
+  if (runtimeNames.length === 0) throw new Error('config.runtimes must define at least one runtime')
+  const builtRuntimes: FleetConfig['runtimes'] = { default: string(runtimes.default, 'config.runtimes.default') }
+  for (const name of runtimeNames) {
+    id(name, `config.runtimes.${name} name`)
+    const definition = object(runtimes[name], `config.runtimes.${name}`)
+    only(definition, ['driver', 'build'], `config.runtimes.${name}`)
+    builtRuntimes[name] = {
+      driver: string(definition.driver, `config.runtimes.${name}.driver`),
+      build: command(definition.build, `config.runtimes.${name}.build`)
+    }
+  }
+  if (builtRuntimes[runtimes.default] === undefined) throw new Error('config.runtimes.default must name a configured runtime')
   const lifecycle = root.lifecycle === undefined ? undefined : object(root.lifecycle, 'config.lifecycle')
   if (lifecycle) only(lifecycle, ['prepareBuild', 'prepareInstance', 'cleanupInstance'], 'config.lifecycle')
   const config: FleetConfig = {
-    protocol: 'tauri-agent-fleet/v1',
+    protocol: 'agent-fleet/v1',
     application: {
       id: string(application.id, 'config.application.id'),
       root: workspacePath(application.root, 'config.application.root')
     },
-    runtimes: {
-      default: runtimes.default,
-      ...(wry ? { wry: { build: command(wry.build, 'config.runtimes.wry.build') } } : {}),
-      ...(cef ? { cef: { build: command(cef.build, 'config.runtimes.cef.build') } } : {})
-    }
+    runtimes: builtRuntimes
   }
   if (lifecycle) {
     const prepareBuild = optionalCommand(lifecycle.prepareBuild, 'config.lifecycle.prepareBuild')
@@ -110,13 +123,13 @@ function hasLocator(value: ObjectValue): boolean {
 export function parseSuite(value: unknown): Suite {
   const root = object(value, 'suite')
   only(root, ['protocol', 'id', 'runtime', 'objective', 'pass', 'budget'], 'suite')
-  if (root.protocol !== 'tauri-agent-suite/v1') throw new Error('suite.protocol must be tauri-agent-suite/v1')
+  if (root.protocol !== 'agent-suite/v1') throw new Error('suite.protocol must be agent-suite/v1')
   const budget = object(root.budget, 'suite.budget')
   only(budget, ['steps', 'seconds', 'tokens', 'repetitions'], 'suite.budget')
   if (!Array.isArray(root.pass) || root.pass.length === 0) throw new Error('suite.pass must be a non-empty array')
   for (const [index, raw] of root.pass.entries()) {
     const condition = object(raw, `suite.pass[${index}]`)
-    const keys = ['state', 'ipc', 'expect'].filter((key) => condition[key] !== undefined)
+    const keys = ['state', 'event', 'expect'].filter((key) => condition[key] !== undefined)
     if (keys.length !== 1) throw new Error(`suite.pass[${index}] must contain exactly one condition`)
     const body = object(condition[keys[0]!], `suite.pass[${index}].${keys[0]}`)
     if (keys[0] === 'state') {
@@ -124,11 +137,11 @@ export function parseSuite(value: unknown): Suite {
       only(body, ['key', 'equals'], `suite.pass[${index}].state`)
       string(body.key, `suite.pass[${index}].state.key`)
       if (!('equals' in body)) throw new Error(`suite.pass[${index}].state.equals is required`)
-    } else if (keys[0] === 'ipc') {
-      only(condition, ['ipc'], `suite.pass[${index}]`)
-      only(body, ['command', 'ok'], `suite.pass[${index}].ipc`)
-      string(body.command, `suite.pass[${index}].ipc.command`)
-      if (body.ok !== undefined && typeof body.ok !== 'boolean') throw new Error(`suite.pass[${index}].ipc.ok must be boolean`)
+    } else if (keys[0] === 'event') {
+      only(condition, ['event'], `suite.pass[${index}]`)
+      only(body, ['name', 'ok'], `suite.pass[${index}].event`)
+      string(body.name, `suite.pass[${index}].event.name`)
+      if (body.ok !== undefined && typeof body.ok !== 'boolean') throw new Error(`suite.pass[${index}].event.ok must be boolean`)
     } else {
       only(condition, ['expect'], `suite.pass[${index}]`)
       only(body, ['scope', 'role', 'name', 'text', 'present', 'value', 'hasState'], `suite.pass[${index}].expect`)
@@ -139,11 +152,11 @@ export function parseSuite(value: unknown): Suite {
     }
   }
   const runtime = root.runtime
-  if (runtime !== undefined && runtime !== 'wry' && runtime !== 'cef') throw new Error('suite.runtime must be wry or cef')
+  if (runtime !== undefined && (typeof runtime !== 'string' || !runtime.trim())) throw new Error('suite.runtime must be a runtime name')
   const seconds = positiveInteger(budget.seconds, 'suite.budget.seconds')
   if (seconds > 2_147_483) throw new Error('suite.budget.seconds cannot exceed 2147483')
   return {
-    protocol: 'tauri-agent-suite/v1',
+    protocol: 'agent-suite/v1',
     id: id(root.id, 'suite.id'),
     ...(runtime ? { runtime } : {}),
     objective: string(root.objective, 'suite.objective'),
@@ -184,14 +197,14 @@ export function parseAction(value: unknown): RunnerAction {
 export function parseArtifactManifest(value: unknown, artifactDir: string): ArtifactManifest {
   const root = object(value, 'artifact manifest')
   only(root, ['protocol', 'executable', 'args', 'cwd', 'env'], 'artifact manifest')
-  if (root.protocol !== 'tauri-agent-artifact/v1') throw new Error('artifact manifest protocol must be tauri-agent-artifact/v1')
+  if (root.protocol !== 'agent-artifact/v1') throw new Error('artifact manifest protocol must be agent-artifact/v1')
   const executable = string(root.executable, 'artifact manifest.executable')
   const full = resolve(artifactDir, executable)
   const rel = relative(artifactDir, full)
   if (isAbsolute(executable) || rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error('artifact executable must be inside the artifact directory')
   }
-  const manifest: ArtifactManifest = { protocol: 'tauri-agent-artifact/v1', executable }
+  const manifest: ArtifactManifest = { protocol: 'agent-artifact/v1', executable }
   if (root.args !== undefined) manifest.args = strings(root.args, 'artifact manifest.args', true)
   if (root.cwd !== undefined) {
     const cwd = string(root.cwd, 'artifact manifest.cwd')

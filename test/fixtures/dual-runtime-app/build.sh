@@ -30,7 +30,7 @@ fi
 bun -e '
 const cef = process.env.FLEET_RUNTIME === "cef"
 await Bun.write(process.env.FLEET_ARTIFACT_MANIFEST, JSON.stringify({
-  protocol: "tauri-agent-artifact/v1",
+  protocol: "agent-artifact/v1",
   executable: "bin/app",
   ...(cef ? {
     args: ["--no-sandbox", "--single-process", "--in-process-gpu"],

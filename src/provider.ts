@@ -56,7 +56,7 @@ async function codexAction(context: RunnerContext): Promise<ModelDecision> {
   const effort = process.env.CODEX_REASONING_EFFORT ?? (model === 'gpt-5.3-codex-spark' ? 'low' : 'medium')
   if (!CODEX_EFFORTS.has(effort)) throw new Error('CODEX_REASONING_EFFORT must be none, low, medium, high, xhigh, or max')
   const disabled = ['shell_tool', 'apps', 'browser_use', 'computer_use', 'image_generation', 'multi_agent', 'hooks', 'plugins', 'remote_plugin']
-  const workspace = await mkdtemp(join(tmpdir(), 'tauri-agent-fleet-codex-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-fleet-codex-'))
   const instructions = join(workspace, 'instructions.md')
   const args = [
     'exec', '--json', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--model', model,

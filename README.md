@@ -1,11 +1,14 @@
-# tauri-agent-fleet
+# agent-fleet
 
-Parallel, headless QA orchestration for Tauri applications instrumented with
-[`tauri-agent-plugin`](https://github.com/byeongsu-hong/tauri-agent-plugin).
+Parallel, headless QA orchestration for native desktop apps, driving each
+through a pluggable agent **driver**. The bundled Tauri driver instruments apps
+via [`tauri-agent-plugin`](https://github.com/byeongsu-hong/tauri-agent-plugin);
+other frameworks (iced, …) are separate drivers implementing the same
+[driver contract](docs/driver-contract.md).
 
-`tauri-agent-fleet` builds an application once per revision/runtime,
+`agent-fleet` builds an application once per revision/runtime,
 launches isolated instances for test suites, drives each instance with a low-cost AI
-runner, and expose every live screen and run state in one dashboard.
+runner, and exposes every live screen and run state in one dashboard.
 
 ## Status
 
@@ -26,25 +29,30 @@ Extraction baselines:
 application repository
   config + app-specific hooks + QA suites
                     |
-tauri-agent-fleet
-  build cache + isolated instances + scheduler + runner + dashboard
+agent-fleet
+  build cache + isolated instances + scheduler + runner + dashboard + driver registry
                     |
-tauri-agent-plugin
-  one live Tauri application: observe, act, assert, capture
+driver  (e.g. @byeongsu-hong/agent-fleet/driver-tauri)
+  observe, act, assert, capture against one live application
+                    |
+plugin  (e.g. tauri-agent-plugin)
+  the app's in-process agent endpoint
 ```
 
 The dependency direction is one-way:
 
 ```text
-application -> fleet -> plugin
+application -> fleet -> driver -> plugin
 ```
 
-The plugin must never learn about Fleet, worktrees, test suites, dashboards, or
-AI providers.
+Fleet core imports no framework SDK; only the driver does. The driver and plugin
+must never learn about Fleet, worktrees, test suites, dashboards, or AI
+providers.
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Driver contract](docs/driver-contract.md)
 - [Plugin contract](docs/plugin-contract.md)
 - [Implementation plan](docs/implementation-plan.md)
 - [Ducktape migration](docs/ducktape-migration.md)
@@ -83,16 +91,16 @@ committed.
 
 ## Configuration
 
-Create `.tauri-agent/fleet.json`. Fleet discovers it from the current directory
+Create `.agent/fleet.json`. Fleet discovers it from the current directory
 or any descendant. Commands are argument arrays and are executed directly,
 without shell interpolation.
 
-The unreleased root-level `tauri-agent-fleet.json` format is intentionally not
+The unreleased root-level `agent-fleet.json` format is intentionally not
 supported.
 
 ```json
 {
-  "protocol": "tauri-agent-fleet/v1",
+  "protocol": "agent-fleet/v1",
   "application": { "id": "com.example.app", "root": "." },
   "lifecycle": {
     "prepareBuild": ["bash", "qa/fleet/prepare-build.sh"],
@@ -101,8 +109,8 @@ supported.
   },
   "runtimes": {
     "default": "wry",
-    "wry": { "build": ["bash", "qa/fleet/build-wry.sh"] },
-    "cef": { "build": ["bash", "qa/fleet/build-cef.sh"] }
+    "wry": { "driver": "@byeongsu-hong/agent-fleet/driver-tauri", "build": ["bash", "qa/fleet/build-wry.sh"] },
+    "cef": { "driver": "@byeongsu-hong/agent-fleet/driver-tauri", "build": ["bash", "qa/fleet/build-cef.sh"] }
   }
 }
 ```
@@ -120,7 +128,7 @@ this manifest to `FLEET_ARTIFACT_MANIFEST`:
 
 ```json
 {
-  "protocol": "tauri-agent-artifact/v1",
+  "protocol": "agent-artifact/v1",
   "executable": "bin/example-app",
   "args": [],
   "cwd": ".",
@@ -134,17 +142,20 @@ private state root is also namespaced by configuration path so commands
 for one repository cannot stop another repository's instances.
 
 `runtimes.default` selects the runtime used by interactive and unspecified suite
-runs. Every named runtime must provide its build command.
+runs. Runtime names are open strings; every named runtime must provide a
+`driver` (an import specifier Fleet loads — a first-party subpath like
+`@byeongsu-hong/agent-fleet/driver-tauri` or any third-party
+`agent-fleet-driver-*` package) and its `build` command.
 
 ## Suites and runner
 
 Suites are JSON or TOON and contain only deterministic assertions. The model may choose
 typed UI actions; it cannot execute JavaScript or shell commands.
-Save each suite as `.tauri-agent/suites/<id>.json` or `<id>.toon` and invoke it by ID.
+Save each suite as `.agent/suites/<id>.json` or `<id>.toon` and invoke it by ID.
 
 ```json
 {
-  "protocol": "tauri-agent-suite/v1",
+  "protocol": "agent-suite/v1",
   "id": "editor-save",
   "runtime": "wry",
   "objective": "Rename the current document to notes.md.",
@@ -164,16 +175,16 @@ token budgets.
 
 ```bash
 # ChatGPT login: Codex Spark, low
-tauri-agent-fleet test editor-save
+agent-fleet test editor-save
 
 # Codex model override
-CODEX_MODEL=gpt-5.6-luna CODEX_REASONING_EFFORT=medium tauri-agent-fleet test editor-save
+CODEX_MODEL=gpt-5.6-luna CODEX_REASONING_EFFORT=medium agent-fleet test editor-save
 
 # Claude login: Haiku, low
-FLEET_MODEL_PROVIDER=claude tauri-agent-fleet test editor-save
+FLEET_MODEL_PROVIDER=claude agent-fleet test editor-save
 
 # Claude model override
-FLEET_MODEL_PROVIDER=claude CLAUDE_MODEL=sonnet tauri-agent-fleet test editor-save
+FLEET_MODEL_PROVIDER=claude CLAUDE_MODEL=sonnet agent-fleet test editor-save
 ```
 
 Use `CODEX_REASONING_EFFORT` or `CLAUDE_EFFORT` to override effort. The optional
@@ -185,11 +196,11 @@ the model boundary. JSON-compatible values round-trip through the shared codec;
 see [the runner instruction contract](docs/runner-instructions.md).
 
 ```bash
-tauri-agent-fleet up HEAD
-tauri-agent-fleet status
-tauri-agent-fleet dashboard
-tauri-agent-fleet test editor-save --jobs 2
-tauri-agent-fleet down
+agent-fleet up HEAD
+agent-fleet status
+agent-fleet dashboard
+agent-fleet test editor-save --jobs 2
+agent-fleet down
 ```
 
 The dashboard binds to `127.0.0.1` by default. A non-loopback `--host` is an
@@ -213,16 +224,16 @@ worker checkout.
 export FLEET_COORDINATOR_TOKEN="$(openssl rand -hex 32)"
 
 # Coordinator host
-tauri-agent-fleet coordinator --host 127.0.0.1 --port 4180 --max-active 12
+agent-fleet coordinator --host 127.0.0.1 --port 4180 --max-active 12
 
 # Submitter
-tauri-agent-fleet submit smoke-wry smoke-cef --coordinator http://coordinator:4180
+agent-fleet submit smoke-wry smoke-cef --coordinator http://coordinator:4180
 
 # Any number of worker hosts
-tauri-agent-fleet worker --coordinator http://coordinator:4180 --id worker-a --jobs 3
-tauri-agent-fleet worker --coordinator http://coordinator:4180 --id worker-b --jobs 3
+agent-fleet worker --coordinator http://coordinator:4180 --id worker-a --jobs 3
+agent-fleet worker --coordinator http://coordinator:4180 --id worker-b --jobs 3
 
-tauri-agent-fleet remote-status --coordinator http://coordinator:4180
+agent-fleet remote-status --coordinator http://coordinator:4180
 ```
 
 The coordinator dashboard is served at its root. Its browser prompt keeps the

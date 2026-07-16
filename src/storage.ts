@@ -12,11 +12,11 @@ async function readJson(path: string): Promise<unknown> {
   }
 }
 
-const DEFAULT_CONFIG = join('.tauri-agent', 'fleet.json')
+const DEFAULT_CONFIG = join('.agent', 'fleet.json')
 
 function workspaceFor(path: string): string {
   const directory = dirname(path)
-  return basename(directory) === '.tauri-agent' ? dirname(directory) : directory
+  return basename(directory) === '.agent' ? dirname(directory) : directory
 }
 
 async function discoverConfig(start = process.cwd()): Promise<string> {
@@ -42,7 +42,7 @@ export async function loadConfig(path?: string): Promise<{ config: FleetConfig; 
 
 export async function loadSuite(workspace: string, id: string): Promise<Suite> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) throw new Error(`invalid suite ID: ${id}`)
-  const directory = join(workspace, '.tauri-agent', 'suites')
+  const directory = join(workspace, '.agent', 'suites')
   let value: unknown
   let extension = 'json'
   try { value = await readJson(join(directory, `${id}.json`)) } catch (error) {
@@ -61,7 +61,7 @@ export function stateRoot(configPath: string): string {
   const identity = createHash('sha256').update(resolve(configPath)).digest('hex').slice(0, 16)
   const configured = process.env.XDG_STATE_HOME
   const base = configured && isAbsolute(configured) ? configured : join(homedir(), '.local', 'state')
-  return join(base, 'tauri-agent-fleet', identity)
+  return join(base, 'agent-fleet', identity)
 }
 
 export async function privateDir(path: string): Promise<void> {
